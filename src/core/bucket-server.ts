@@ -11,6 +11,7 @@ import type {
   BucketUpdatedEvent,
   StoreRecord,
 } from '../types/index.js';
+import { IndexManager } from './index-manager.js';
 import { SchemaValidator } from './schema-validator.js';
 
 // ── Message types ──────────────────────────────────────────────────
@@ -37,6 +38,7 @@ export type BucketCallReply =
 interface BucketState {
   readonly table: Map<unknown, StoreRecord>;
   readonly validator: SchemaValidator;
+  readonly indexManager: IndexManager;
   autoincrementCounter: number;
 }
 
@@ -56,6 +58,12 @@ export function createBucketBehavior(
       return {
         table: new Map(),
         validator: new SchemaValidator(bucketName, definition.schema, definition.key),
+        indexManager: new IndexManager(
+          bucketName,
+          definition.key,
+          definition.indexes ?? [],
+          definition.schema,
+        ),
         autoincrementCounter: 0,
       };
     },
@@ -76,17 +84,18 @@ export function createBucketBehavior(
         case 'all':
           return [[...state.table.values()], state];
         case 'where':
-          return [selectWhere(state.table, msg.filter), state];
+          return [selectWhere(state.table, msg.filter, state.indexManager), state];
         case 'findOne':
-          return [findOne(state.table, msg.filter), state];
+          return [findOne(state.table, msg.filter, state.indexManager), state];
         case 'count':
           return [
             msg.filter !== undefined
-              ? selectWhere(state.table, msg.filter).length
+              ? selectWhere(state.table, msg.filter, state.indexManager).length
               : state.table.size,
             state,
           ];
         case 'clear':
+          state.indexManager.clear();
           state.table.clear();
           return [undefined, state];
       }
@@ -110,6 +119,7 @@ function handleInsert(
   state.autoincrementCounter++;
   const record = state.validator.prepareInsert(data, state.autoincrementCounter);
   const key = (record as Record<string, unknown>)[definition.key];
+  state.indexManager.addRecord(key, record as Record<string, unknown>);
   state.table.set(key, record);
 
   EventBus.publish<BucketInsertedEvent>(
@@ -136,6 +146,11 @@ function handleUpdate(
   }
 
   const updated = state.validator.prepareUpdate(existing, changes);
+  state.indexManager.updateRecord(
+    key,
+    existing as Record<string, unknown>,
+    updated as Record<string, unknown>,
+  );
   state.table.set(key, updated);
 
   EventBus.publish<BucketUpdatedEvent>(
@@ -156,6 +171,7 @@ function handleDelete(
   const existing = state.table.get(key);
 
   if (existing !== undefined) {
+    state.indexManager.removeRecord(key, existing as Record<string, unknown>);
     state.table.delete(key);
 
     EventBus.publish<BucketDeletedEvent>(
@@ -185,7 +201,34 @@ function matchesFilter(
 function selectWhere(
   table: Map<unknown, StoreRecord>,
   filter: Record<string, unknown>,
+  indexManager: IndexManager,
 ): StoreRecord[] {
+  const entries = Object.entries(filter);
+  if (entries.length === 0) return [...table.values()];
+
+  // Try to find an indexed field to narrow candidates
+  for (const [field, value] of entries) {
+    const keys = indexManager.lookup(field, value);
+    if (keys === undefined) continue;
+
+    // We have candidate keys from the index — resolve records and apply remaining filter
+    const remaining: Record<string, unknown> = {};
+    for (const [f, v] of entries) {
+      if (f !== field) remaining[f] = v;
+    }
+    const hasRemaining = Object.keys(remaining).length > 0;
+
+    const results: StoreRecord[] = [];
+    for (const key of keys) {
+      const record = table.get(key);
+      if (record !== undefined && (!hasRemaining || matchesFilter(record, remaining))) {
+        results.push(record);
+      }
+    }
+    return results;
+  }
+
+  // No indexed field found — full scan fallback
   const results: StoreRecord[] = [];
   for (const record of table.values()) {
     if (matchesFilter(record, filter)) {
@@ -198,7 +241,35 @@ function selectWhere(
 function findOne(
   table: Map<unknown, StoreRecord>,
   filter: Record<string, unknown>,
+  indexManager: IndexManager,
 ): StoreRecord | undefined {
+  const entries = Object.entries(filter);
+  if (entries.length === 0) {
+    const first = table.values().next();
+    return first.done ? undefined : first.value;
+  }
+
+  // Try to find an indexed field to narrow candidates
+  for (const [field, value] of entries) {
+    const keys = indexManager.lookup(field, value);
+    if (keys === undefined) continue;
+
+    const remaining: Record<string, unknown> = {};
+    for (const [f, v] of entries) {
+      if (f !== field) remaining[f] = v;
+    }
+    const hasRemaining = Object.keys(remaining).length > 0;
+
+    for (const key of keys) {
+      const record = table.get(key);
+      if (record !== undefined && (!hasRemaining || matchesFilter(record, remaining))) {
+        return record;
+      }
+    }
+    return undefined;
+  }
+
+  // No indexed field found — full scan fallback
   for (const record of table.values()) {
     if (matchesFilter(record, filter)) {
       return record;

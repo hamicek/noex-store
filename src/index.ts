@@ -34,6 +34,9 @@ export { ValidationError, SchemaValidator } from './core/schema-validator.js';
 export type { BucketCallMsg, BucketCallReply, BucketRef } from './core/bucket-server.js';
 export { createBucketBehavior } from './core/bucket-server.js';
 
+// Core — Index Manager
+export { IndexManager } from './core/index-manager.js';
+
 // Core — Bucket Handle
 export { BucketHandle } from './core/bucket-handle.js';
 
