@@ -1,3 +1,5 @@
+import type { StorageAdapter } from '@hamicek/noex';
+
 export type FieldType = 'string' | 'number' | 'boolean' | 'object' | 'array' | 'date';
 
 export type GeneratedType = 'uuid' | 'cuid' | 'autoincrement' | 'timestamp';
@@ -29,4 +31,16 @@ export interface BucketDefinition {
   readonly schema: SchemaDefinition;
   readonly indexes?: readonly string[];
   readonly etsType?: EtsTableType;
+  /** Opt-out of persistence. Default: `true` when store has persistence configured. */
+  readonly persistent?: boolean;
 }
+
+export interface StorePersistenceConfig {
+  /** Storage adapter (MemoryAdapter, FileAdapter, SQLiteAdapter from @hamicek/noex). */
+  readonly adapter: StorageAdapter;
+  /** Debounce interval for batched writes in ms. Default: 100. */
+  readonly debounceMs?: number;
+  /** Callback for non-fatal persistence errors. */
+  readonly onError?: (error: Error) => void;
+}
+

@@ -6,6 +6,7 @@ export type {
   FieldDefinition,
   SchemaDefinition,
   BucketDefinition,
+  StorePersistenceConfig,
 } from './schema.js';
 
 export type {
