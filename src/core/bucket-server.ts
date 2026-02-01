@@ -9,6 +9,7 @@ import type {
   BucketDeletedEvent,
   BucketInsertedEvent,
   BucketUpdatedEvent,
+  PaginatedResult,
   StoreRecord,
 } from '../types/index.js';
 import { IndexManager } from './index-manager.js';
@@ -38,13 +39,22 @@ export type BucketCallMsg =
   | { readonly type: 'findOne'; readonly filter: Record<string, unknown> }
   | { readonly type: 'count'; readonly filter?: Record<string, unknown> }
   | { readonly type: 'clear' }
-  | { readonly type: 'getSnapshot' };
+  | { readonly type: 'getSnapshot' }
+  | { readonly type: 'first'; readonly n: number }
+  | { readonly type: 'last'; readonly n: number }
+  | { readonly type: 'paginate'; readonly after?: unknown; readonly limit: number }
+  | { readonly type: 'sum'; readonly field: string; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'avg'; readonly field: string; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'min'; readonly field: string; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'max'; readonly field: string; readonly filter?: Record<string, unknown> };
 
 export type BucketCallReply =
   | StoreRecord
   | StoreRecord[]
   | number
+  | number | undefined
   | BucketSnapshot
+  | PaginatedResult
   | undefined;
 
 // ── State ──────────────────────────────────────────────────────────
@@ -125,6 +135,20 @@ export function createBucketBehavior(
             records: [...state.table.entries()],
             autoincrementCounter: state.autoincrementCounter,
           } satisfies BucketSnapshot, state];
+        case 'first':
+          return [handleFirst(state, msg.n, definition), state];
+        case 'last':
+          return [handleLast(state, msg.n, definition), state];
+        case 'paginate':
+          return [handlePaginate(state, msg.after, msg.limit, definition), state];
+        case 'sum':
+          return [handleSum(state, msg.field, msg.filter), state];
+        case 'avg':
+          return [handleAvg(state, msg.field, msg.filter), state];
+        case 'min':
+          return [handleMin(state, msg.field, msg.filter), state];
+        case 'max':
+          return [handleMax(state, msg.field, msg.filter), state];
       }
     },
 
@@ -303,4 +327,141 @@ function findOne(
     }
   }
   return undefined;
+}
+
+// ── Key comparison ──────────────────────────────────────────────────
+
+function compareKeys(a: unknown, b: unknown): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b));
+}
+
+function getOrderedKeys(
+  table: Map<unknown, StoreRecord>,
+  definition: BucketDefinition,
+): unknown[] {
+  const keys = [...table.keys()];
+  if (definition.etsType === 'ordered_set') {
+    keys.sort(compareKeys);
+  }
+  return keys;
+}
+
+// ── Pagination handlers ─────────────────────────────────────────────
+
+function handleFirst(
+  state: BucketState,
+  n: number,
+  definition: BucketDefinition,
+): StoreRecord[] {
+  const keys = getOrderedKeys(state.table, definition);
+  return keys.slice(0, n).map((k) => state.table.get(k)!);
+}
+
+function handleLast(
+  state: BucketState,
+  n: number,
+  definition: BucketDefinition,
+): StoreRecord[] {
+  const keys = getOrderedKeys(state.table, definition);
+  return keys.slice(-n).map((k) => state.table.get(k)!);
+}
+
+function handlePaginate(
+  state: BucketState,
+  after: unknown | undefined,
+  limit: number,
+  definition: BucketDefinition,
+): PaginatedResult {
+  const keys = getOrderedKeys(state.table, definition);
+  let startIdx = 0;
+
+  if (after !== undefined) {
+    const cursorIdx = keys.findIndex((k) => k === after);
+    startIdx = cursorIdx === -1 ? keys.length : cursorIdx + 1;
+  }
+
+  const slice = keys.slice(startIdx, startIdx + limit);
+  const records = slice.map((k) => state.table.get(k)!);
+  const hasMore = startIdx + limit < keys.length;
+  const nextCursor = records.length > 0
+    ? (records[records.length - 1] as Record<string, unknown>)[definition.key]
+    : undefined;
+
+  return { records, hasMore, nextCursor };
+}
+
+// ── Aggregation handlers ────────────────────────────────────────────
+
+function getMatchingRecords(
+  state: BucketState,
+  filter?: Record<string, unknown>,
+): StoreRecord[] {
+  if (filter === undefined) return [...state.table.values()];
+  return selectWhere(state.table, filter, state.indexManager);
+}
+
+function handleSum(
+  state: BucketState,
+  field: string,
+  filter?: Record<string, unknown>,
+): number {
+  const records = getMatchingRecords(state, filter);
+  let sum = 0;
+  for (const record of records) {
+    const value = (record as Record<string, unknown>)[field];
+    if (typeof value === 'number') sum += value;
+  }
+  return sum;
+}
+
+function handleAvg(
+  state: BucketState,
+  field: string,
+  filter?: Record<string, unknown>,
+): number {
+  const records = getMatchingRecords(state, filter);
+  if (records.length === 0) return 0;
+  let sum = 0;
+  let count = 0;
+  for (const record of records) {
+    const value = (record as Record<string, unknown>)[field];
+    if (typeof value === 'number') {
+      sum += value;
+      count++;
+    }
+  }
+  return count === 0 ? 0 : sum / count;
+}
+
+function handleMin(
+  state: BucketState,
+  field: string,
+  filter?: Record<string, unknown>,
+): number | undefined {
+  const records = getMatchingRecords(state, filter);
+  let min: number | undefined;
+  for (const record of records) {
+    const value = (record as Record<string, unknown>)[field];
+    if (typeof value === 'number' && (min === undefined || value < min)) {
+      min = value;
+    }
+  }
+  return min;
+}
+
+function handleMax(
+  state: BucketState,
+  field: string,
+  filter?: Record<string, unknown>,
+): number | undefined {
+  const records = getMatchingRecords(state, filter);
+  let max: number | undefined;
+  for (const record of records) {
+    const value = (record as Record<string, unknown>)[field];
+    if (typeof value === 'number' && (max === undefined || value > max)) {
+      max = value;
+    }
+  }
+  return max;
 }

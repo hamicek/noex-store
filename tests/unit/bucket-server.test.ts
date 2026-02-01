@@ -13,6 +13,7 @@ import type {
   BucketInsertedEvent,
   BucketUpdatedEvent,
   BucketDeletedEvent,
+  PaginatedResult,
   StoreRecord,
 } from '../../src/types/index.js';
 import { ValidationError } from '../../src/core/schema-validator.js';
@@ -584,6 +585,333 @@ describe('BucketServer initialData restore', () => {
     expect(count).toBe(0);
 
     await GenServer.stop(ref);
+  });
+});
+
+// ── first / last ────────────────────────────────────────────────
+
+describe('BucketServer first/last', () => {
+  const numericDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      label: { type: 'string', required: true },
+    },
+    etsType: 'ordered_set',
+  };
+
+  let numBucketRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('items', numericDef, eventBusRef);
+    numBucketRef = await GenServer.start(behavior) as BucketRef;
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(numBucketRef)) {
+      await GenServer.stop(numBucketRef);
+    }
+  });
+
+  function numCall(msg: BucketCallMsg): Promise<BucketCallReply> {
+    return GenServer.call(numBucketRef, msg);
+  }
+
+  it('first — empty bucket returns empty array', async () => {
+    const result = await numCall({ type: 'first', n: 3 }) as StoreRecord[];
+    expect(result).toEqual([]);
+  });
+
+  it('first(3) — fewer records than n returns all', async () => {
+    await numCall({ type: 'insert', data: { label: 'a' } });
+    await numCall({ type: 'insert', data: { label: 'b' } });
+
+    const result = await numCall({ type: 'first', n: 3 }) as StoreRecord[];
+    expect(result).toHaveLength(2);
+  });
+
+  it('first(3) — ordered_set returns first 3 sorted by key', async () => {
+    for (let i = 0; i < 5; i++) {
+      await numCall({ type: 'insert', data: { label: `item-${i}` } });
+    }
+
+    const result = await numCall({ type: 'first', n: 3 }) as StoreRecord[];
+    expect(result).toHaveLength(3);
+    expect(result[0]!.id).toBe(1);
+    expect(result[1]!.id).toBe(2);
+    expect(result[2]!.id).toBe(3);
+  });
+
+  it('last(3) — ordered_set returns last 3 sorted by key', async () => {
+    for (let i = 0; i < 5; i++) {
+      await numCall({ type: 'insert', data: { label: `item-${i}` } });
+    }
+
+    const result = await numCall({ type: 'last', n: 3 }) as StoreRecord[];
+    expect(result).toHaveLength(3);
+    expect(result[0]!.id).toBe(3);
+    expect(result[1]!.id).toBe(4);
+    expect(result[2]!.id).toBe(5);
+  });
+
+  it('last(10) — fewer records returns all', async () => {
+    await numCall({ type: 'insert', data: { label: 'only' } });
+
+    const result = await numCall({ type: 'last', n: 10 }) as StoreRecord[];
+    expect(result).toHaveLength(1);
+    expect(result[0]!.label).toBe('only');
+  });
+
+  it('first/last on set bucket uses insertion order', async () => {
+    const setDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'number', generated: 'autoincrement' },
+        label: { type: 'string', required: true },
+      },
+      etsType: 'set',
+    };
+    const behavior = createBucketBehavior('set-items', setDef, eventBusRef);
+    const setRef = await GenServer.start(behavior) as BucketRef;
+
+    await GenServer.call(setRef, { type: 'insert', data: { label: 'x' } });
+    await GenServer.call(setRef, { type: 'insert', data: { label: 'y' } });
+    await GenServer.call(setRef, { type: 'insert', data: { label: 'z' } });
+
+    const first = await GenServer.call(setRef, { type: 'first', n: 2 }) as StoreRecord[];
+    expect(first).toHaveLength(2);
+    expect(first[0]!.label).toBe('x');
+    expect(first[1]!.label).toBe('y');
+
+    const last = await GenServer.call(setRef, { type: 'last', n: 2 }) as StoreRecord[];
+    expect(last).toHaveLength(2);
+    expect(last[0]!.label).toBe('y');
+    expect(last[1]!.label).toBe('z');
+
+    await GenServer.stop(setRef);
+  });
+});
+
+// ── paginate ────────────────────────────────────────────────────
+
+describe('BucketServer paginate', () => {
+  const paginateDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      label: { type: 'string', required: true },
+    },
+    etsType: 'ordered_set',
+  };
+
+  let pagRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('pag', paginateDef, eventBusRef);
+    pagRef = await GenServer.start(behavior) as BucketRef;
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(pagRef)) {
+      await GenServer.stop(pagRef);
+    }
+  });
+
+  function pagCall(msg: BucketCallMsg): Promise<BucketCallReply> {
+    return GenServer.call(pagRef, msg);
+  }
+
+  async function seedN(n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      await pagCall({ type: 'insert', data: { label: `r-${i}` } });
+    }
+  }
+
+  it('first page — returns records with hasMore and nextCursor', async () => {
+    await seedN(5);
+
+    const page = await pagCall({ type: 'paginate', limit: 2 }) as PaginatedResult;
+    expect(page.records).toHaveLength(2);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toBe(2);
+    expect(page.records[0]!.id).toBe(1);
+    expect(page.records[1]!.id).toBe(2);
+  });
+
+  it('second page — continues from cursor', async () => {
+    await seedN(5);
+
+    const page1 = await pagCall({ type: 'paginate', limit: 2 }) as PaginatedResult;
+    const page2 = await pagCall({ type: 'paginate', after: page1.nextCursor, limit: 2 }) as PaginatedResult;
+
+    expect(page2.records).toHaveLength(2);
+    expect(page2.records[0]!.id).toBe(3);
+    expect(page2.records[1]!.id).toBe(4);
+    expect(page2.hasMore).toBe(true);
+  });
+
+  it('last page — hasMore is false', async () => {
+    await seedN(5);
+
+    const page = await pagCall({ type: 'paginate', after: 4, limit: 10 }) as PaginatedResult;
+    expect(page.records).toHaveLength(1);
+    expect(page.records[0]!.id).toBe(5);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBe(5);
+  });
+
+  it('after last key — empty result', async () => {
+    await seedN(3);
+
+    const page = await pagCall({ type: 'paginate', after: 3, limit: 10 }) as PaginatedResult;
+    expect(page.records).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  it('nonexistent cursor — returns empty', async () => {
+    await seedN(3);
+
+    const page = await pagCall({ type: 'paginate', after: 999, limit: 10 }) as PaginatedResult;
+    expect(page.records).toEqual([]);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('ordered_set — returns sorted by key', async () => {
+    await seedN(5);
+
+    const all: StoreRecord[] = [];
+    let cursor: unknown;
+    let hasMore = true;
+
+    while (hasMore) {
+      const page = await pagCall({
+        type: 'paginate',
+        ...(cursor !== undefined ? { after: cursor } : {}),
+        limit: 2,
+      }) as PaginatedResult;
+      all.push(...page.records);
+      cursor = page.nextCursor;
+      hasMore = page.hasMore;
+    }
+
+    expect(all).toHaveLength(5);
+    expect(all.map((r) => r.id)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('empty bucket — returns empty result', async () => {
+    const page = await pagCall({ type: 'paginate', limit: 10 }) as PaginatedResult;
+    expect(page.records).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeUndefined();
+  });
+});
+
+// ── sum / avg / min / max ───────────────────────────────────────
+
+describe('BucketServer aggregations', () => {
+  const aggDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      name: { type: 'string', required: true },
+      score: { type: 'number', default: 0 },
+      tier: { type: 'string', enum: ['basic', 'vip'], default: 'basic' },
+    },
+    indexes: ['tier'],
+  };
+
+  let aggRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('agg', aggDef, eventBusRef);
+    aggRef = await GenServer.start(behavior) as BucketRef;
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(aggRef)) {
+      await GenServer.stop(aggRef);
+    }
+  });
+
+  function aggCall(msg: BucketCallMsg): Promise<BucketCallReply> {
+    return GenServer.call(aggRef, msg);
+  }
+
+  async function seedAgg(): Promise<void> {
+    await aggCall({ type: 'insert', data: { name: 'Alice', score: 10, tier: 'vip' } });
+    await aggCall({ type: 'insert', data: { name: 'Bob', score: 20, tier: 'basic' } });
+    await aggCall({ type: 'insert', data: { name: 'Carol', score: 30, tier: 'vip' } });
+    await aggCall({ type: 'insert', data: { name: 'Dave', score: 40, tier: 'basic' } });
+  }
+
+  // sum
+  it('sum — whole bucket', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'sum', field: 'score' });
+    expect(result).toBe(100);
+  });
+
+  it('sum — with filter', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'sum', field: 'score', filter: { tier: 'vip' } });
+    expect(result).toBe(40);
+  });
+
+  it('sum — skips non-numeric values', async () => {
+    await aggCall({ type: 'insert', data: { name: 'Test', score: 10 } });
+    // name field is non-numeric
+    const result = await aggCall({ type: 'sum', field: 'name' });
+    expect(result).toBe(0);
+  });
+
+  it('sum — empty result returns 0', async () => {
+    const result = await aggCall({ type: 'sum', field: 'score' });
+    expect(result).toBe(0);
+  });
+
+  // avg
+  it('avg — basic', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'avg', field: 'score' });
+    expect(result).toBe(25);
+  });
+
+  it('avg — empty returns 0', async () => {
+    const result = await aggCall({ type: 'avg', field: 'score' });
+    expect(result).toBe(0);
+  });
+
+  it('avg — with non-numeric skips them', async () => {
+    await aggCall({ type: 'insert', data: { name: 'Only', score: 10 } });
+    // avg over 'name' — no numeric values
+    const result = await aggCall({ type: 'avg', field: 'name' });
+    expect(result).toBe(0);
+  });
+
+  // min
+  it('min — basic', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'min', field: 'score' });
+    expect(result).toBe(10);
+  });
+
+  it('min — empty returns undefined', async () => {
+    const result = await aggCall({ type: 'min', field: 'score' });
+    expect(result).toBeUndefined();
+  });
+
+  // max
+  it('max — basic', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'max', field: 'score' });
+    expect(result).toBe(40);
+  });
+
+  it('max — with filter', async () => {
+    await seedAgg();
+    const result = await aggCall({ type: 'max', field: 'score', filter: { tier: 'vip' } });
+    expect(result).toBe(30);
   });
 });
 
