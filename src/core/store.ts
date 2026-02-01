@@ -26,6 +26,20 @@ export class BucketNotDefinedError extends Error {
   }
 }
 
+export class UniqueConstraintError extends Error {
+  readonly bucket: string;
+  readonly field: string;
+  readonly value: unknown;
+
+  constructor(bucket: string, field: string, value: unknown) {
+    super(`Unique constraint violation in bucket "${bucket}": field "${field}" already has value "${String(value)}"`);
+    this.name = 'UniqueConstraintError';
+    this.bucket = bucket;
+    this.field = field;
+    this.value = value;
+  }
+}
+
 // ── Options ───────────────────────────────────────────────────────
 
 export interface StoreOptions {

@@ -39,4 +39,4 @@ export { BucketHandle } from './core/bucket-handle.js';
 
 // Core — Store
 export type { StoreOptions } from './core/store.js';
-export { Store, BucketAlreadyExistsError, BucketNotDefinedError } from './core/store.js';
+export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError } from './core/store.js';
