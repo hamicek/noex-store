@@ -477,6 +477,197 @@ describe('waitForPending', () => {
   });
 });
 
+// ── Record-level invalidation ─────────────────────────────────────
+
+describe('record-level invalidation', () => {
+  it('re-evaluates when the tracked key changes', async () => {
+    const handle = bucketAccessor('customers');
+    const alice = await handle.insert({ name: 'Alice' });
+    const bob = await handle.insert({ name: 'Bob' });
+
+    manager.defineQuery('single', async (ctx, params: { id: unknown }) =>
+      ctx.bucket('customers').get(params.id),
+    );
+
+    const callback = vi.fn();
+    await manager.subscribe('single', { id: alice.id }, callback);
+
+    // Update the tracked record
+    await handle.update(alice.id, { name: 'Alicia' });
+    manager.onBucketChange('customers', alice.id);
+    await manager.waitForPending();
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect((callback.mock.calls[0]![0] as any).name).toBe('Alicia');
+  });
+
+  it('skips re-evaluation when an untracked key changes', async () => {
+    const handle = bucketAccessor('customers');
+    const alice = await handle.insert({ name: 'Alice' });
+    const bob = await handle.insert({ name: 'Bob' });
+
+    manager.defineQuery('single', async (ctx, params: { id: unknown }) =>
+      ctx.bucket('customers').get(params.id),
+    );
+
+    const callback = vi.fn();
+    await manager.subscribe('single', { id: alice.id }, callback);
+
+    // Update a different record — should NOT trigger re-evaluation
+    await handle.update(bob.id, { name: 'Bobby' });
+    manager.onBucketChange('customers', bob.id);
+    await manager.waitForPending();
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('bucket-level dep triggers on any key change', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice', tier: 'vip' });
+
+    manager.defineQuery('vips', async (ctx) =>
+      ctx.bucket('customers').where({ tier: 'vip' }),
+    );
+
+    const callback = vi.fn();
+    await manager.subscribe('vips', callback);
+
+    // Insert a basic customer — where result unchanged (deep-equal) → no callback
+    const basic = await handle.insert({ name: 'Bob', tier: 'basic' });
+    manager.onBucketChange('customers', basic.id);
+    await manager.waitForPending();
+
+    // But re-evaluation DID happen (bucket-level) — just result was same.
+    // Now insert a VIP → result changes
+    const carol = await handle.insert({ name: 'Carol', tier: 'vip' });
+    manager.onBucketChange('customers', carol.id);
+    await manager.waitForPending();
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    const result = callback.mock.calls[0]![0] as any[];
+    expect(result).toHaveLength(2);
+  });
+
+  it('bucket-level subsumes record-level on the same bucket', async () => {
+    const handle = bucketAccessor('customers');
+    const alice = await handle.insert({ name: 'Alice', tier: 'vip' });
+
+    // Query that uses both get() and where() on the same bucket
+    manager.defineQuery('mixed', async (ctx, params: { id: unknown }) => {
+      const record = await ctx.bucket('customers').get(params.id);
+      const all = await ctx.bucket('customers').where({ tier: 'vip' });
+      return { record, all };
+    });
+
+    const callback = vi.fn();
+    await manager.subscribe('mixed', { id: alice.id }, callback);
+
+    // Change a DIFFERENT record — bucket-level dep means it still triggers re-evaluation
+    const bob = await handle.insert({ name: 'Bob', tier: 'basic' });
+    manager.onBucketChange('customers', bob.id);
+    await manager.waitForPending();
+
+    // Result didn't change (alice still same, vips still [alice]) → no callback
+    expect(callback).not.toHaveBeenCalled();
+
+    // Now add a VIP → result changes
+    const carol = await handle.insert({ name: 'Carol', tier: 'vip' });
+    manager.onBucketChange('customers', carol.id);
+    await manager.waitForPending();
+
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('mixed deps across buckets — record-level and bucket-level independent', async () => {
+    const customersHandle = bucketAccessor('customers');
+    const ordersHandle = bucketAccessor('orders');
+    const alice = await customersHandle.insert({ name: 'Alice' });
+    const bob = await customersHandle.insert({ name: 'Bob' });
+    await ordersHandle.insert({ customerId: alice.id, amount: 100 });
+
+    // get() from customers (record-level), where() from orders (bucket-level)
+    manager.defineQuery('customerOrders', async (ctx, params: { customerId: unknown }) => {
+      const customer = await ctx.bucket('customers').get(params.customerId);
+      const orders = await ctx.bucket('orders').where({ customerId: params.customerId });
+      return { customer, orders };
+    });
+
+    const callback = vi.fn();
+    await manager.subscribe('customerOrders', { customerId: alice.id }, callback);
+
+    // Change a different customer — record-level skips (alice not affected)
+    await customersHandle.update(bob.id, { name: 'Bobby' });
+    manager.onBucketChange('customers', bob.id);
+    await manager.waitForPending();
+    expect(callback).not.toHaveBeenCalled();
+
+    // Change in orders — bucket-level triggers re-eval
+    const newOrder = await ordersHandle.insert({ customerId: alice.id, amount: 200 });
+    manager.onBucketChange('orders', newOrder.id);
+    await manager.waitForPending();
+    expect(callback).toHaveBeenCalledTimes(1);
+
+    callback.mockClear();
+
+    // Change the tracked customer — record-level triggers re-eval
+    await customersHandle.update(alice.id, { name: 'Alicia' });
+    manager.onBucketChange('customers', alice.id);
+    await manager.waitForPending();
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect((callback.mock.calls[0]![0] as any).customer.name).toBe('Alicia');
+  });
+
+  it('updates record-level index after re-evaluation changes tracked keys', async () => {
+    const handle = bucketAccessor('customers');
+    const alice = await handle.insert({ name: 'Alice' });
+    const bob = await handle.insert({ name: 'Bob' });
+
+    let targetId: unknown = alice.id;
+
+    // Query reads whichever key targetId points to
+    manager.defineQuery('dynamic', async (ctx) =>
+      ctx.bucket('customers').get(targetId),
+    );
+
+    const callback = vi.fn();
+    await manager.subscribe('dynamic', callback);
+
+    // Initially tracking alice. Change alice → triggers re-eval.
+    await handle.update(alice.id, { name: 'Alicia' });
+    manager.onBucketChange('customers', alice.id);
+    await manager.waitForPending();
+    expect(callback).toHaveBeenCalledTimes(1);
+
+    callback.mockClear();
+
+    // Switch target to bob (next re-eval will track bob instead of alice)
+    targetId = bob.id;
+
+    // Trigger re-eval via alice (still in old index)
+    await handle.update(alice.id, { name: 'Alice Again' });
+    manager.onBucketChange('customers', alice.id);
+    await manager.waitForPending();
+
+    // Re-eval happened, now tracking bob. Result changed (was alice, now bob).
+    expect(callback).toHaveBeenCalledTimes(1);
+
+    callback.mockClear();
+
+    // Now alice should no longer trigger — index was updated to bob
+    await handle.update(alice.id, { name: 'Alice Third' });
+    manager.onBucketChange('customers', alice.id);
+    await manager.waitForPending();
+    expect(callback).not.toHaveBeenCalled();
+
+    // But bob should trigger
+    await handle.update(bob.id, { name: 'Bobby' });
+    manager.onBucketChange('customers', bob.id);
+    await manager.waitForPending();
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect((callback.mock.calls[0]![0] as any).name).toBe('Bobby');
+  });
+});
+
 // ── destroy ───────────────────────────────────────────────────────
 
 describe('destroy', () => {
