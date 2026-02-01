@@ -14,6 +14,7 @@ import type {
 } from '../types/index.js';
 import { IndexManager } from './index-manager.js';
 import { SchemaValidator } from './schema-validator.js';
+import { parseTtl } from '../utils/parse-ttl.js';
 
 // ── Persistence types ─────────────────────────────────────────────
 
@@ -46,7 +47,8 @@ export type BucketCallMsg =
   | { readonly type: 'sum'; readonly field: string; readonly filter?: Record<string, unknown> }
   | { readonly type: 'avg'; readonly field: string; readonly filter?: Record<string, unknown> }
   | { readonly type: 'min'; readonly field: string; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'max'; readonly field: string; readonly filter?: Record<string, unknown> };
+  | { readonly type: 'max'; readonly field: string; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'purgeExpired' };
 
 export type BucketCallReply =
   | StoreRecord
@@ -78,6 +80,9 @@ export function createBucketBehavior(
   eventBusRef: EventBusRef,
   initialData?: BucketInitialData,
 ): GenServerBehavior<BucketState, BucketCallMsg, never, BucketCallReply> {
+  const ttlMs = definition.ttl !== undefined ? parseTtl(definition.ttl) : undefined;
+  const maxSize = definition.maxSize;
+
   return {
     init(): BucketState {
       const table = new Map<unknown, StoreRecord>();
@@ -106,7 +111,7 @@ export function createBucketBehavior(
     ): CallResult<BucketCallReply, BucketState> {
       switch (msg.type) {
         case 'insert':
-          return handleInsert(bucketName, definition, eventBusRef, state, msg.data);
+          return handleInsert(bucketName, definition, eventBusRef, state, msg.data, ttlMs, maxSize);
         case 'get':
           return [state.table.get(msg.key), state];
         case 'update':
@@ -149,6 +154,8 @@ export function createBucketBehavior(
           return [handleMin(state, msg.field, msg.filter), state];
         case 'max':
           return [handleMax(state, msg.field, msg.filter), state];
+        case 'purgeExpired':
+          return [handlePurgeExpired(bucketName, eventBusRef, state), state];
       }
     },
 
@@ -166,11 +173,26 @@ function handleInsert(
   eventBusRef: EventBusRef,
   state: BucketState,
   data: Record<string, unknown>,
+  ttlMs: number | undefined,
+  maxSize: number | undefined,
 ): CallResult<StoreRecord, BucketState> {
   state.autoincrementCounter++;
   const record = state.validator.prepareInsert(data, state.autoincrementCounter);
-  const key = (record as Record<string, unknown>)[definition.key];
-  state.indexManager.addRecord(key, record as Record<string, unknown>);
+  const recordObj = record as Record<string, unknown>;
+  const key = recordObj[definition.key];
+
+  // Set _expiresAt if bucket has TTL and record doesn't already have it
+  if (ttlMs !== undefined && recordObj._expiresAt === undefined) {
+    recordObj._expiresAt = record._createdAt + ttlMs;
+  }
+
+  // Evict oldest records if at capacity
+  if (maxSize !== undefined && state.table.size >= maxSize) {
+    const evictCount = state.table.size - maxSize + 1;
+    evictOldest(bucketName, eventBusRef, state, evictCount);
+  }
+
+  state.indexManager.addRecord(key, recordObj);
   state.table.set(key, record);
 
   EventBus.publish<BucketInsertedEvent>(
@@ -233,6 +255,59 @@ function handleDelete(
   }
 
   return [undefined, state];
+}
+
+function evictOldest(
+  bucketName: string,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+  count: number,
+): void {
+  const entries: Array<{ key: unknown; record: StoreRecord }> = [];
+  for (const [key, record] of state.table) {
+    entries.push({ key, record });
+  }
+
+  entries.sort((a, b) => a.record._createdAt - b.record._createdAt);
+
+  const toEvict = entries.slice(0, count);
+  for (const { key, record } of toEvict) {
+    state.indexManager.removeRecord(key, record as Record<string, unknown>);
+    state.table.delete(key);
+
+    EventBus.publish<BucketDeletedEvent>(
+      eventBusRef,
+      `bucket.${bucketName}.deleted`,
+      { type: 'deleted', bucket: bucketName, key, record },
+    );
+  }
+}
+
+function handlePurgeExpired(
+  bucketName: string,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+): number {
+  const now = Date.now();
+  let purgedCount = 0;
+
+  for (const [key, record] of state.table) {
+    const expiresAt = (record as Record<string, unknown>)._expiresAt;
+    if (typeof expiresAt === 'number' && expiresAt <= now) {
+      state.indexManager.removeRecord(key, record as Record<string, unknown>);
+      state.table.delete(key);
+
+      EventBus.publish<BucketDeletedEvent>(
+        eventBusRef,
+        `bucket.${bucketName}.deleted`,
+        { type: 'deleted', bucket: bucketName, key, record },
+      );
+
+      purgedCount++;
+    }
+  }
+
+  return purgedCount;
 }
 
 // ── Query helpers ──────────────────────────────────────────────────

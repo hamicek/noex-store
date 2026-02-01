@@ -915,6 +915,342 @@ describe('BucketServer aggregations', () => {
   });
 });
 
+// ── _expiresAt on insert ─────────────────────────────────────────
+
+describe('BucketServer _expiresAt', () => {
+  const ttlDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      name: { type: 'string', required: true },
+    },
+    ttl: 5000,
+  };
+
+  it('sets _expiresAt automatically when bucket has TTL', async () => {
+    const ref = await startBucket('ttl-bucket', ttlDef);
+    const record = await GenServer.call(ref, {
+      type: 'insert',
+      data: { name: 'Alice' },
+    }) as StoreRecord;
+
+    expect(record._expiresAt).toBeDefined();
+    expect(record._expiresAt).toBe(record._createdAt + 5000);
+
+    await GenServer.stop(ref);
+  });
+
+  it('does not set _expiresAt when bucket has no TTL', async () => {
+    const record = await call({ type: 'insert', data: { name: 'Bob' } }) as StoreRecord;
+
+    expect((record as Record<string, unknown>)._expiresAt).toBeUndefined();
+  });
+
+  it('preserves per-record _expiresAt override', async () => {
+    const ref = await startBucket('ttl-bucket', ttlDef);
+    const customExpiry = Date.now() + 999999;
+    const record = await GenServer.call(ref, {
+      type: 'insert',
+      data: { name: 'Custom', _expiresAt: customExpiry },
+    }) as StoreRecord;
+
+    expect(record._expiresAt).toBe(customExpiry);
+
+    await GenServer.stop(ref);
+  });
+
+  it('works with TTL as string format', async () => {
+    const stringTtlDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'number', generated: 'autoincrement' },
+        name: { type: 'string', required: true },
+      },
+      ttl: '1h',
+    };
+    const ref = await startBucket('ttl-str', stringTtlDef);
+    const record = await GenServer.call(ref, {
+      type: 'insert',
+      data: { name: 'Hourly' },
+    }) as StoreRecord;
+
+    expect(record._expiresAt).toBe(record._createdAt + 3_600_000);
+
+    await GenServer.stop(ref);
+  });
+});
+
+// ── purgeExpired ─────────────────────────────────────────────────
+
+describe('BucketServer purgeExpired', () => {
+  const ttlDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      name: { type: 'string', required: true },
+    },
+    ttl: 50, // 50ms TTL for tests
+  };
+
+  it('returns 0 for empty bucket', async () => {
+    const ref = await startBucket('purge-empty', ttlDef);
+    const purged = await GenServer.call(ref, { type: 'purgeExpired' });
+
+    expect(purged).toBe(0);
+
+    await GenServer.stop(ref);
+  });
+
+  it('does not purge non-expired records', async () => {
+    const ref = await startBucket('purge-fresh', ttlDef);
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Fresh' } });
+
+    const purged = await GenServer.call(ref, { type: 'purgeExpired' });
+
+    expect(purged).toBe(0);
+    const count = await GenServer.call(ref, { type: 'count' });
+    expect(count).toBe(1);
+
+    await GenServer.stop(ref);
+  });
+
+  it('purges expired records', async () => {
+    const ref = await startBucket('purge-expired', ttlDef);
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Will expire' } });
+
+    await delay(80);
+    const purged = await GenServer.call(ref, { type: 'purgeExpired' });
+
+    expect(purged).toBe(1);
+    const count = await GenServer.call(ref, { type: 'count' });
+    expect(count).toBe(0);
+
+    await GenServer.stop(ref);
+  });
+
+  it('purges only expired records (mixed)', async () => {
+    const longTtlDef: BucketDefinition = {
+      ...ttlDef,
+      ttl: 10_000,
+    };
+    const ref = await startBucket('purge-mixed', longTtlDef);
+
+    // Insert one with short custom _expiresAt
+    await GenServer.call(ref, {
+      type: 'insert',
+      data: { name: 'Short', _expiresAt: Date.now() + 50 },
+    });
+    // Insert one with long TTL (default)
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Long' } });
+
+    await delay(80);
+    const purged = await GenServer.call(ref, { type: 'purgeExpired' });
+
+    expect(purged).toBe(1);
+    const remaining = await GenServer.call(ref, { type: 'all' }) as StoreRecord[];
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.name).toBe('Long');
+
+    await GenServer.stop(ref);
+  });
+
+  it('does not purge records without _expiresAt', async () => {
+    // Bucket without TTL — records have no _expiresAt
+    await call({ type: 'insert', data: { name: 'Permanent' } });
+
+    const purged = await call({ type: 'purgeExpired' });
+    expect(purged).toBe(0);
+
+    const count = await call({ type: 'count' });
+    expect(count).toBe(1);
+  });
+
+  it('emits deleted events for purged records', async () => {
+    const ref = await startBucket('purge-events', ttlDef);
+    const events: BucketDeletedEvent[] = [];
+    await EventBus.subscribe<BucketDeletedEvent>(
+      eventBusRef,
+      'bucket.purge-events.deleted',
+      (msg) => { events.push(msg); },
+    );
+
+    const record = await GenServer.call(ref, {
+      type: 'insert',
+      data: { name: 'Event target' },
+    }) as StoreRecord;
+
+    await delay(80);
+    await GenServer.call(ref, { type: 'purgeExpired' });
+    await delay(50);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe('deleted');
+    expect(events[0]!.bucket).toBe('purge-events');
+    expect(events[0]!.key).toBe(record.id);
+
+    await GenServer.stop(ref);
+  });
+
+  it('updates indexes after purge', async () => {
+    const indexedTtlDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'number', generated: 'autoincrement' },
+        name: { type: 'string', required: true },
+      },
+      indexes: ['name'],
+      ttl: 50,
+    };
+    const ref = await startBucket('purge-idx', indexedTtlDef);
+
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Indexed' } });
+
+    await delay(80);
+    await GenServer.call(ref, { type: 'purgeExpired' });
+
+    const found = await GenServer.call(ref, {
+      type: 'where',
+      filter: { name: 'Indexed' },
+    }) as StoreRecord[];
+    expect(found).toHaveLength(0);
+
+    await GenServer.stop(ref);
+  });
+});
+
+// ── maxSize eviction ─────────────────────────────────────────────
+
+describe('BucketServer maxSize eviction', () => {
+  const maxSizeDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      name: { type: 'string', required: true },
+    },
+    maxSize: 3,
+  };
+
+  it('does not evict when under limit', async () => {
+    const ref = await startBucket('max-under', maxSizeDef);
+
+    await GenServer.call(ref, { type: 'insert', data: { name: 'A' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'B' } });
+
+    const count = await GenServer.call(ref, { type: 'count' });
+    expect(count).toBe(2);
+
+    await GenServer.stop(ref);
+  });
+
+  it('evicts oldest record when at capacity', async () => {
+    const ref = await startBucket('max-evict', maxSizeDef);
+
+    const r1 = await GenServer.call(ref, { type: 'insert', data: { name: 'First' } }) as StoreRecord;
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Second' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Third' } });
+    const r4 = await GenServer.call(ref, { type: 'insert', data: { name: 'Fourth' } }) as StoreRecord;
+
+    const count = await GenServer.call(ref, { type: 'count' });
+    expect(count).toBe(3);
+
+    const evicted = await GenServer.call(ref, { type: 'get', key: r1.id });
+    expect(evicted).toBeUndefined();
+
+    const newest = await GenServer.call(ref, { type: 'get', key: r4.id }) as StoreRecord;
+    expect(newest.name).toBe('Fourth');
+
+    await GenServer.stop(ref);
+  });
+
+  it('evicts record with lowest _createdAt', async () => {
+    const ref = await startBucket('max-oldest', maxSizeDef);
+
+    const r1 = await GenServer.call(ref, { type: 'insert', data: { name: 'Oldest' } }) as StoreRecord;
+    await delay(5); // Ensure different _createdAt
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Middle' } });
+    await delay(5);
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Newest' } });
+    await delay(5);
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Overflow' } });
+
+    const evicted = await GenServer.call(ref, { type: 'get', key: r1.id });
+    expect(evicted).toBeUndefined();
+
+    const all = await GenServer.call(ref, { type: 'all' }) as StoreRecord[];
+    expect(all.map((r) => r.name)).toEqual(
+      expect.arrayContaining(['Middle', 'Newest', 'Overflow']),
+    );
+
+    await GenServer.stop(ref);
+  });
+
+  it('emits deleted event for evicted record', async () => {
+    const ref = await startBucket('max-event', maxSizeDef);
+    const events: BucketDeletedEvent[] = [];
+    await EventBus.subscribe<BucketDeletedEvent>(
+      eventBusRef,
+      'bucket.max-event.deleted',
+      (msg) => { events.push(msg); },
+    );
+
+    const r1 = await GenServer.call(ref, { type: 'insert', data: { name: 'First' } }) as StoreRecord;
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Second' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Third' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Trigger' } });
+
+    await delay(50);
+
+    // Should have at least 1 deleted event (the eviction)
+    const evictionEvents = events.filter((e) => e.key === r1.id);
+    expect(evictionEvents).toHaveLength(1);
+    expect(evictionEvents[0]!.record.name).toBe('First');
+
+    await GenServer.stop(ref);
+  });
+
+  it('eviction updates indexes', async () => {
+    const indexedMaxDef: BucketDefinition = {
+      ...maxSizeDef,
+      indexes: ['name'],
+    };
+    const ref = await startBucket('max-idx', indexedMaxDef);
+
+    await GenServer.call(ref, { type: 'insert', data: { name: 'Evicted' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'B' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'C' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'D' } });
+
+    const found = await GenServer.call(ref, {
+      type: 'where',
+      filter: { name: 'Evicted' },
+    }) as StoreRecord[];
+    expect(found).toHaveLength(0);
+
+    await GenServer.stop(ref);
+  });
+
+  it('maxSize: 1 — only last insert survives', async () => {
+    const singleDef: BucketDefinition = {
+      ...maxSizeDef,
+      maxSize: 1,
+    };
+    const ref = await startBucket('max-one', singleDef);
+
+    await GenServer.call(ref, { type: 'insert', data: { name: 'A' } });
+    await GenServer.call(ref, { type: 'insert', data: { name: 'B' } });
+    const r3 = await GenServer.call(ref, { type: 'insert', data: { name: 'C' } }) as StoreRecord;
+
+    const count = await GenServer.call(ref, { type: 'count' });
+    expect(count).toBe(1);
+
+    const all = await GenServer.call(ref, { type: 'all' }) as StoreRecord[];
+    expect(all[0]!.name).toBe('C');
+    expect(all[0]!.id).toBe(r3.id);
+
+    await GenServer.stop(ref);
+  });
+});
+
 // ── Utility ─────────────────────────────────────────────────────
 
 function delay(ms: number): Promise<void> {
