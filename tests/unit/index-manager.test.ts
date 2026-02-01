@@ -345,3 +345,117 @@ describe('IndexManager — isIndexed', () => {
     expect(mgr.isIndexed('nope')).toBe(false);
   });
 });
+
+// ── validateInsert ──────────────────────────────────────────────
+
+describe('IndexManager — validateInsert', () => {
+  let mgr: IndexManager;
+
+  beforeEach(() => {
+    mgr = makeManager();
+  });
+
+  it('passes when no unique conflict exists', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    expect(() =>
+      mgr.validateInsert('k2', { id: 'k2', email: 'b@x.cz', name: 'B' }),
+    ).not.toThrow();
+  });
+
+  it('throws UniqueConstraintError on duplicate unique value', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    expect(() =>
+      mgr.validateInsert('k2', { id: 'k2', email: 'a@x.cz', name: 'B' }),
+    ).toThrow(UniqueConstraintError);
+  });
+
+  it('skips null values — no error', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    expect(() =>
+      mgr.validateInsert('k2', { id: 'k2', email: null, name: 'B' }),
+    ).not.toThrow();
+  });
+
+  it('skips undefined values — no error', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    expect(() =>
+      mgr.validateInsert('k2', { id: 'k2', name: 'B' }),
+    ).not.toThrow();
+  });
+
+  it('does not modify indexes after call', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    mgr.validateInsert('k2', { id: 'k2', email: 'b@x.cz', name: 'B' });
+    // b@x.cz should NOT be in the index
+    expect(mgr.lookup('email', 'b@x.cz')).toEqual([]);
+  });
+
+  it('checks all unique fields (code + email)', () => {
+    const mgr2 = makeManager(['email', 'tier', 'code']);
+    mgr2.addRecord('k1', { id: 'k1', email: 'a@x.cz', code: 'AAA', tier: 'vip' });
+    expect(() =>
+      mgr2.validateInsert('k2', { id: 'k2', email: 'b@x.cz', code: 'AAA', tier: 'basic' }),
+    ).toThrow(UniqueConstraintError);
+  });
+});
+
+// ── validateUpdate ──────────────────────────────────────────────
+
+describe('IndexManager — validateUpdate', () => {
+  let mgr: IndexManager;
+
+  beforeEach(() => {
+    mgr = makeManager();
+  });
+
+  it('passes when no unique conflict exists', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    mgr.addRecord('k2', { id: 'k2', email: 'b@x.cz', name: 'B' });
+
+    const old = { id: 'k2', email: 'b@x.cz', name: 'B' };
+    const updated = { ...old, email: 'c@x.cz' };
+    expect(() => mgr.validateUpdate('k2', old, updated)).not.toThrow();
+  });
+
+  it('throws UniqueConstraintError on conflict', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    mgr.addRecord('k2', { id: 'k2', email: 'b@x.cz', name: 'B' });
+
+    const old = { id: 'k2', email: 'b@x.cz', name: 'B' };
+    const updated = { ...old, email: 'a@x.cz' };
+    expect(() => mgr.validateUpdate('k2', old, updated)).toThrow(UniqueConstraintError);
+  });
+
+  it('allows self-reference — updating to own current value', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    // Same value but different object reference — strict equality skips it
+    const rec = { id: 'k1', email: 'a@x.cz', name: 'A' };
+    expect(() => mgr.validateUpdate('k1', rec, rec)).not.toThrow();
+  });
+
+  it('skips unchanged fields', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    mgr.addRecord('k2', { id: 'k2', email: 'b@x.cz', name: 'B' });
+    // email unchanged on k2 — should not throw
+    const old = { id: 'k2', email: 'b@x.cz', name: 'B' };
+    const updated = { ...old, name: 'B2' };
+    expect(() => mgr.validateUpdate('k2', old, updated)).not.toThrow();
+  });
+
+  it('allows clearing to null', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    const old = { id: 'k1', email: 'a@x.cz', name: 'A' };
+    const updated = { ...old, email: null };
+    expect(() => mgr.validateUpdate('k1', old, updated)).not.toThrow();
+  });
+
+  it('does not modify indexes after call', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+    const old = { id: 'k1', email: 'a@x.cz', name: 'A' };
+    const updated = { ...old, email: 'new@x.cz' };
+    mgr.validateUpdate('k1', old, updated);
+    // Index should still have old value
+    expect(mgr.lookup('email', 'a@x.cz')).toEqual(['k1']);
+    expect(mgr.lookup('email', 'new@x.cz')).toEqual([]);
+  });
+});

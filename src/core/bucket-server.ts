@@ -7,6 +7,7 @@ import { EventBus, type EventBusRef } from '@hamicek/noex';
 import type {
   BucketDefinition,
   BucketDeletedEvent,
+  BucketEvent,
   BucketInsertedEvent,
   BucketUpdatedEvent,
   PaginatedResult,
@@ -14,6 +15,7 @@ import type {
 } from '../types/index.js';
 import { IndexManager } from './index-manager.js';
 import { SchemaValidator } from './schema-validator.js';
+import { TransactionConflictError } from './store.js';
 import { parseTtl } from '../utils/parse-ttl.js';
 
 // ── Persistence types ─────────────────────────────────────────────
@@ -26,6 +28,53 @@ export interface BucketSnapshot {
 export interface BucketInitialData {
   readonly records: ReadonlyArray<readonly [unknown, StoreRecord]>;
   readonly autoincrementCounter: number;
+}
+
+// ── Transaction batch types ─────────────────────────────────────
+
+export interface CommitInsertOp {
+  readonly type: 'insert';
+  readonly key: unknown;
+  readonly record: StoreRecord;
+}
+
+export interface CommitUpdateOp {
+  readonly type: 'update';
+  readonly key: unknown;
+  readonly newRecord: StoreRecord;
+  readonly expectedVersion: number;
+}
+
+export interface CommitDeleteOp {
+  readonly type: 'delete';
+  readonly key: unknown;
+  readonly expectedVersion: number;
+}
+
+export type CommitBatchOp = CommitInsertOp | CommitUpdateOp | CommitDeleteOp;
+
+export interface UndoInsertOp {
+  readonly type: 'undo_insert';
+  readonly key: unknown;
+}
+
+export interface UndoUpdateOp {
+  readonly type: 'undo_update';
+  readonly key: unknown;
+  readonly oldRecord: StoreRecord;
+}
+
+export interface UndoDeleteOp {
+  readonly type: 'undo_delete';
+  readonly key: unknown;
+  readonly record: StoreRecord;
+}
+
+export type UndoOp = UndoInsertOp | UndoUpdateOp | UndoDeleteOp;
+
+export interface CommitBatchResult {
+  readonly events: readonly BucketEvent[];
+  readonly undoOps: readonly UndoOp[];
 }
 
 // ── Message types ──────────────────────────────────────────────────
@@ -48,7 +97,10 @@ export type BucketCallMsg =
   | { readonly type: 'avg'; readonly field: string; readonly filter?: Record<string, unknown> }
   | { readonly type: 'min'; readonly field: string; readonly filter?: Record<string, unknown> }
   | { readonly type: 'max'; readonly field: string; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'purgeExpired' };
+  | { readonly type: 'purgeExpired' }
+  | { readonly type: 'commitBatch'; readonly operations: readonly CommitBatchOp[]; readonly autoincrementUpdate?: number }
+  | { readonly type: 'rollbackBatch'; readonly undoOps: readonly UndoOp[] }
+  | { readonly type: 'getAutoincrementCounter' };
 
 export type BucketCallReply =
   | StoreRecord
@@ -57,6 +109,7 @@ export type BucketCallReply =
   | number | undefined
   | BucketSnapshot
   | PaginatedResult
+  | CommitBatchResult
   | undefined;
 
 // ── State ──────────────────────────────────────────────────────────
@@ -156,6 +209,12 @@ export function createBucketBehavior(
           return [handleMax(state, msg.field, msg.filter), state];
         case 'purgeExpired':
           return [handlePurgeExpired(bucketName, eventBusRef, state), state];
+        case 'commitBatch':
+          return handleCommitBatch(bucketName, state, msg.operations, msg.autoincrementUpdate);
+        case 'rollbackBatch':
+          return [handleRollbackBatch(state, msg.undoOps), state];
+        case 'getAutoincrementCounter':
+          return [state.autoincrementCounter, state];
       }
     },
 
@@ -539,4 +598,159 @@ function handleMax(
     }
   }
   return max;
+}
+
+// ── Transaction batch handlers ──────────────────────────────────
+
+function handleCommitBatch(
+  bucketName: string,
+  state: BucketState,
+  operations: readonly CommitBatchOp[],
+  autoincrementUpdate: number | undefined,
+): CallResult<CommitBatchResult, BucketState> {
+  // ── Phase 1: Validate ALL operations (no mutations) ───────────
+  for (const op of operations) {
+    switch (op.type) {
+      case 'insert': {
+        if (state.table.has(op.key)) {
+          throw new TransactionConflictError(
+            bucketName, op.key,
+            `Record with key "${String(op.key)}" already exists`,
+          );
+        }
+        state.indexManager.validateInsert(op.key, op.record as Record<string, unknown>);
+        break;
+      }
+      case 'update': {
+        const existing = state.table.get(op.key);
+        if (existing === undefined) {
+          throw new TransactionConflictError(
+            bucketName, op.key,
+            `Record with key "${String(op.key)}" not found`,
+          );
+        }
+        if (existing._version !== op.expectedVersion) {
+          throw new TransactionConflictError(
+            bucketName, op.key,
+            `Version mismatch: expected ${String(op.expectedVersion)}, got ${String(existing._version)}`,
+          );
+        }
+        state.indexManager.validateUpdate(
+          op.key,
+          existing as Record<string, unknown>,
+          op.newRecord as Record<string, unknown>,
+        );
+        break;
+      }
+      case 'delete': {
+        const existing = state.table.get(op.key);
+        if (existing !== undefined && existing._version !== op.expectedVersion) {
+          throw new TransactionConflictError(
+            bucketName, op.key,
+            `Version mismatch: expected ${String(op.expectedVersion)}, got ${String(existing._version)}`,
+          );
+        }
+        break;
+      }
+    }
+  }
+
+  // ── Phase 2: Apply ALL operations + collect events and undo ops ──
+  const events: BucketEvent[] = [];
+  const undoOps: UndoOp[] = [];
+
+  try {
+    for (const op of operations) {
+      switch (op.type) {
+        case 'insert': {
+          state.indexManager.addRecord(op.key, op.record as Record<string, unknown>);
+          state.table.set(op.key, op.record);
+          events.push({
+            type: 'inserted', bucket: bucketName, key: op.key, record: op.record,
+          });
+          undoOps.push({ type: 'undo_insert', key: op.key });
+          break;
+        }
+        case 'update': {
+          const oldRecord = state.table.get(op.key)!;
+          state.indexManager.updateRecord(
+            op.key,
+            oldRecord as Record<string, unknown>,
+            op.newRecord as Record<string, unknown>,
+          );
+          state.table.set(op.key, op.newRecord);
+          events.push({
+            type: 'updated', bucket: bucketName, key: op.key,
+            oldRecord, newRecord: op.newRecord,
+          });
+          undoOps.push({ type: 'undo_update', key: op.key, oldRecord });
+          break;
+        }
+        case 'delete': {
+          const existing = state.table.get(op.key);
+          if (existing !== undefined) {
+            state.indexManager.removeRecord(op.key, existing as Record<string, unknown>);
+            state.table.delete(op.key);
+            events.push({
+              type: 'deleted', bucket: bucketName, key: op.key, record: existing,
+            });
+            undoOps.push({ type: 'undo_delete', key: op.key, record: existing });
+          }
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    // Rollback partial Phase 2 changes to keep state consistent
+    for (let i = undoOps.length - 1; i >= 0; i--) {
+      applyUndoOp(state, undoOps[i]!);
+    }
+    throw error;
+  }
+
+  if (autoincrementUpdate !== undefined && autoincrementUpdate > state.autoincrementCounter) {
+    state.autoincrementCounter = autoincrementUpdate;
+  }
+
+  return [{ events, undoOps }, state];
+}
+
+function handleRollbackBatch(
+  state: BucketState,
+  undoOps: readonly UndoOp[],
+): undefined {
+  for (let i = undoOps.length - 1; i >= 0; i--) {
+    applyUndoOp(state, undoOps[i]!);
+  }
+  return undefined;
+}
+
+function applyUndoOp(state: BucketState, op: UndoOp): void {
+  switch (op.type) {
+    case 'undo_insert': {
+      const record = state.table.get(op.key);
+      if (record !== undefined) {
+        state.indexManager.removeRecord(op.key, record as Record<string, unknown>);
+        state.table.delete(op.key);
+      }
+      break;
+    }
+    case 'undo_update': {
+      const current = state.table.get(op.key);
+      if (current !== undefined) {
+        state.indexManager.updateRecord(
+          op.key,
+          current as Record<string, unknown>,
+          op.oldRecord as Record<string, unknown>,
+        );
+      }
+      state.table.set(op.key, op.oldRecord);
+      break;
+    }
+    case 'undo_delete': {
+      state.indexManager.addRecord(op.key, op.record as Record<string, unknown>);
+      state.table.set(op.key, op.record);
+      break;
+    }
+  }
 }

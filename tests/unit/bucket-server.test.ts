@@ -7,6 +7,9 @@ import {
   type BucketCallReply,
   type BucketSnapshot,
   type BucketInitialData,
+  type CommitBatchOp,
+  type CommitBatchResult,
+  type UndoOp,
 } from '../../src/core/bucket-server.js';
 import type {
   BucketDefinition,
@@ -17,7 +20,7 @@ import type {
   StoreRecord,
 } from '../../src/types/index.js';
 import { ValidationError } from '../../src/core/schema-validator.js';
-import { UniqueConstraintError } from '../../src/core/store.js';
+import { UniqueConstraintError, TransactionConflictError } from '../../src/core/store.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -1248,6 +1251,514 @@ describe('BucketServer maxSize eviction', () => {
     expect(all[0]!.id).toBe(r3.id);
 
     await GenServer.stop(ref);
+  });
+});
+
+// ── commitBatch ─────────────────────────────────────────────────
+
+describe('BucketServer commitBatch', () => {
+  const uniqueDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'string', generated: 'uuid' },
+      name: { type: 'string', required: true },
+      email: { type: 'string', unique: true },
+      score: { type: 'number', default: 0 },
+    },
+    indexes: ['email'],
+  };
+
+  let txRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('tx-test', uniqueDef, eventBusRef);
+    txRef = await GenServer.start(behavior) as BucketRef;
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(txRef)) {
+      await GenServer.stop(txRef);
+    }
+  });
+
+  function txCall(msg: BucketCallMsg): Promise<BucketCallReply> {
+    return GenServer.call(txRef, msg);
+  }
+
+  const now = Date.now();
+
+  function makeRecord(overrides: Record<string, unknown> = {}): StoreRecord {
+    return {
+      id: 'r1',
+      name: 'Alice',
+      score: 0,
+      _version: 1,
+      _createdAt: now,
+      _updatedAt: now,
+      ...overrides,
+    } as StoreRecord;
+  }
+
+  it('empty batch — returns empty events and undoOps', async () => {
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [],
+    }) as CommitBatchResult;
+
+    expect(result.events).toEqual([]);
+    expect(result.undoOps).toEqual([]);
+  });
+
+  it('single insert — record in table, returns inserted event + undo_insert', async () => {
+    const record = makeRecord({ id: 'new-1', email: 'a@x.cz' });
+    const ops: CommitBatchOp[] = [
+      { type: 'insert', key: 'new-1', record },
+    ];
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: ops,
+    }) as CommitBatchResult;
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]!.type).toBe('inserted');
+    expect(result.events[0]!.bucket).toBe('tx-test');
+    expect(result.undoOps).toHaveLength(1);
+    expect(result.undoOps[0]!.type).toBe('undo_insert');
+
+    // Record actually in table
+    const fetched = await txCall({ type: 'get', key: 'new-1' });
+    expect(fetched).toEqual(record);
+  });
+
+  it('single update — record updated, returns updated event + undo_update', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Alice', score: 10 } }) as StoreRecord;
+    const newRecord = { ...inserted, name: 'Alicia', score: 20, _version: 2, _updatedAt: Date.now() } as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: inserted.id, newRecord, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]!.type).toBe('updated');
+    expect(result.undoOps).toHaveLength(1);
+    expect(result.undoOps[0]!.type).toBe('undo_update');
+
+    const fetched = await txCall({ type: 'get', key: inserted.id }) as StoreRecord;
+    expect(fetched.name).toBe('Alicia');
+    expect(fetched.score).toBe(20);
+  });
+
+  it('single delete — record removed, returns deleted event + undo_delete', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Bob' } }) as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'delete', key: inserted.id, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]!.type).toBe('deleted');
+    expect(result.undoOps).toHaveLength(1);
+    expect(result.undoOps[0]!.type).toBe('undo_delete');
+
+    const fetched = await txCall({ type: 'get', key: inserted.id });
+    expect(fetched).toBeUndefined();
+  });
+
+  it('multiple inserts — all records in table', async () => {
+    const r1 = makeRecord({ id: 'a', name: 'A', email: 'a@x.cz' });
+    const r2 = makeRecord({ id: 'b', name: 'B', email: 'b@x.cz' });
+    const ops: CommitBatchOp[] = [
+      { type: 'insert', key: 'a', record: r1 },
+      { type: 'insert', key: 'b', record: r2 },
+    ];
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: ops,
+    }) as CommitBatchResult;
+
+    expect(result.events).toHaveLength(2);
+    expect(result.undoOps).toHaveLength(2);
+
+    const all = await txCall({ type: 'all' }) as StoreRecord[];
+    expect(all).toHaveLength(2);
+  });
+
+  it('insert + update on different records — both applied', async () => {
+    const existing = await txCall({ type: 'insert', data: { name: 'Old', score: 5 } }) as StoreRecord;
+    const newInsert = makeRecord({ id: 'fresh', name: 'Fresh', email: 'f@x.cz' });
+    const updatedRecord = { ...existing, score: 99, _version: 2, _updatedAt: Date.now() } as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'insert', key: 'fresh', record: newInsert },
+        { type: 'update', key: existing.id, newRecord: updatedRecord, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    expect(result.events).toHaveLength(2);
+
+    const fetched = await txCall({ type: 'get', key: existing.id }) as StoreRecord;
+    expect(fetched.score).toBe(99);
+    const fresh = await txCall({ type: 'get', key: 'fresh' });
+    expect(fresh).toEqual(newInsert);
+  });
+
+  it('version mismatch on update → throws TransactionConflictError, no changes applied', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Alice' } }) as StoreRecord;
+    const newRecord = { ...inserted, name: 'Alicia', _version: 2 } as StoreRecord;
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: inserted.id, newRecord, expectedVersion: 999 },
+      ],
+    })).rejects.toThrow(TransactionConflictError);
+
+    // Original record unchanged
+    const fetched = await txCall({ type: 'get', key: inserted.id }) as StoreRecord;
+    expect(fetched.name).toBe('Alice');
+  });
+
+  it('version mismatch on delete → throws TransactionConflictError, no changes applied', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Bob' } }) as StoreRecord;
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'delete', key: inserted.id, expectedVersion: 999 },
+      ],
+    })).rejects.toThrow(TransactionConflictError);
+
+    // Record still exists
+    const fetched = await txCall({ type: 'get', key: inserted.id });
+    expect(fetched).toBeDefined();
+  });
+
+  it('unique constraint violation on insert → throws, no changes applied', async () => {
+    await txCall({ type: 'insert', data: { name: 'Alice', email: 'a@x.cz' } });
+    const r2 = makeRecord({ id: 'dup', name: 'Dup', email: 'a@x.cz' });
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [{ type: 'insert', key: 'dup', record: r2 }],
+    })).rejects.toThrow(UniqueConstraintError);
+
+    expect(await txCall({ type: 'get', key: 'dup' })).toBeUndefined();
+  });
+
+  it('unique constraint violation on update → throws, no changes applied', async () => {
+    const r1 = await txCall({ type: 'insert', data: { name: 'A', email: 'a@x.cz' } }) as StoreRecord;
+    const r2 = await txCall({ type: 'insert', data: { name: 'B', email: 'b@x.cz' } }) as StoreRecord;
+
+    const newRecord = { ...r2, email: 'a@x.cz', _version: 2 } as StoreRecord;
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: r2.id, newRecord, expectedVersion: 1 },
+      ],
+    })).rejects.toThrow(UniqueConstraintError);
+
+    // r2 unchanged
+    const fetched = await txCall({ type: 'get', key: r2.id }) as StoreRecord;
+    expect(fetched.email).toBe('b@x.cz');
+  });
+
+  it('insert with existing key → throws TransactionConflictError', async () => {
+    const existing = await txCall({ type: 'insert', data: { name: 'Eve' } }) as StoreRecord;
+    const duplicate = makeRecord({ id: existing.id, name: 'Fake' });
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [{ type: 'insert', key: existing.id, record: duplicate }],
+    })).rejects.toThrow(TransactionConflictError);
+  });
+
+  it('update of non-existing record → throws TransactionConflictError', async () => {
+    const newRecord = makeRecord({ id: 'ghost', name: 'Ghost' });
+
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: 'ghost', newRecord, expectedVersion: 1 },
+      ],
+    })).rejects.toThrow(TransactionConflictError);
+  });
+
+  it('delete of non-existing record → idempotent, no event', async () => {
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'delete', key: 'ghost', expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    expect(result.events).toEqual([]);
+    expect(result.undoOps).toEqual([]);
+  });
+
+  it('autoincrementUpdate — counter updated', async () => {
+    await txCall({ type: 'commitBatch', operations: [], autoincrementUpdate: 42 });
+
+    const counter = await txCall({ type: 'getAutoincrementCounter' });
+    expect(counter).toBe(42);
+  });
+
+  it('autoincrementUpdate lower than current — ignored', async () => {
+    // Insert increments counter to 1
+    await txCall({ type: 'insert', data: { name: 'X' } });
+
+    await txCall({ type: 'commitBatch', operations: [], autoincrementUpdate: 0 });
+
+    const counter = await txCall({ type: 'getAutoincrementCounter' });
+    expect(counter).toBe(1);
+  });
+
+  it('commitBatch does NOT publish events on EventBus', async () => {
+    const events: unknown[] = [];
+    await EventBus.subscribe(eventBusRef, 'bucket.tx-test.*', (msg) => { events.push(msg); });
+
+    const record = makeRecord({ id: 'silent', email: 'silent@x.cz' });
+    await txCall({
+      type: 'commitBatch',
+      operations: [{ type: 'insert', key: 'silent', record }],
+    });
+
+    await delay(50);
+    expect(events).toHaveLength(0);
+  });
+
+  it('indexes updated after commitBatch — lookup works', async () => {
+    const record = makeRecord({ id: 'idx-test', email: 'idx@x.cz' });
+
+    await txCall({
+      type: 'commitBatch',
+      operations: [{ type: 'insert', key: 'idx-test', record }],
+    });
+
+    const found = await txCall({ type: 'where', filter: { email: 'idx@x.cz' } }) as StoreRecord[];
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe('idx-test');
+  });
+
+  it('atomicity — failed validation leaves state unchanged for batch with valid + invalid ops', async () => {
+    const existing = await txCall({ type: 'insert', data: { name: 'Alice', score: 0 } }) as StoreRecord;
+    const validInsert = makeRecord({ id: 'valid', name: 'Valid', email: 'v@x.cz' });
+    const badUpdate = { ...existing, name: 'Updated', _version: 2 } as StoreRecord;
+
+    // First op is valid insert, second op has wrong expected version
+    await expect(txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'insert', key: 'valid', record: validInsert },
+        { type: 'update', key: existing.id, newRecord: badUpdate, expectedVersion: 999 },
+      ],
+    })).rejects.toThrow(TransactionConflictError);
+
+    // Neither op should have been applied (Phase 1 validation catches it)
+    expect(await txCall({ type: 'get', key: 'valid' })).toBeUndefined();
+    const fetched = await txCall({ type: 'get', key: existing.id }) as StoreRecord;
+    expect(fetched.name).toBe('Alice');
+  });
+});
+
+// ── rollbackBatch ────────────────────────────────────────────────
+
+describe('BucketServer rollbackBatch', () => {
+  const txDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'string', generated: 'uuid' },
+      name: { type: 'string', required: true },
+      email: { type: 'string', unique: true },
+      score: { type: 'number', default: 0 },
+    },
+    indexes: ['email'],
+  };
+
+  let txRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('rb-test', txDef, eventBusRef);
+    txRef = await GenServer.start(behavior) as BucketRef;
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(txRef)) {
+      await GenServer.stop(txRef);
+    }
+  });
+
+  function txCall(msg: BucketCallMsg): Promise<BucketCallReply> {
+    return GenServer.call(txRef, msg);
+  }
+
+  const now = Date.now();
+
+  it('undo_insert — record removed from table', async () => {
+    const record = {
+      id: 'ins-1', name: 'A', score: 0, email: 'a@x.cz',
+      _version: 1, _createdAt: now, _updatedAt: now,
+    } as StoreRecord;
+
+    // Commit an insert
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [{ type: 'insert', key: 'ins-1', record }],
+    }) as CommitBatchResult;
+
+    // Rollback
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    expect(await txCall({ type: 'get', key: 'ins-1' })).toBeUndefined();
+  });
+
+  it('undo_update — old record restored', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Alice', score: 10 } }) as StoreRecord;
+    const newRecord = { ...inserted, name: 'Alicia', score: 99, _version: 2, _updatedAt: Date.now() } as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: inserted.id, newRecord, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    const fetched = await txCall({ type: 'get', key: inserted.id }) as StoreRecord;
+    expect(fetched.name).toBe('Alice');
+    expect(fetched.score).toBe(10);
+    expect(fetched._version).toBe(1);
+  });
+
+  it('undo_delete — record re-inserted', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'Bob', email: 'bob@x.cz' } }) as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'delete', key: inserted.id, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    const fetched = await txCall({ type: 'get', key: inserted.id }) as StoreRecord;
+    expect(fetched).toBeDefined();
+    expect(fetched.name).toBe('Bob');
+  });
+
+  it('multiple undo ops — state identical to before commitBatch', async () => {
+    const r1 = await txCall({ type: 'insert', data: { name: 'A', score: 10, email: 'a@x.cz' } }) as StoreRecord;
+    const r2 = await txCall({ type: 'insert', data: { name: 'B', score: 20, email: 'b@x.cz' } }) as StoreRecord;
+
+    const now2 = Date.now();
+    const newR1 = { ...r1, score: 99, _version: 2, _updatedAt: now2 } as StoreRecord;
+    const newInsert = {
+      id: 'new-1', name: 'New', score: 0, email: 'new@x.cz',
+      _version: 1, _createdAt: now2, _updatedAt: now2,
+    } as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: r1.id, newRecord: newR1, expectedVersion: 1 },
+        { type: 'delete', key: r2.id, expectedVersion: 1 },
+        { type: 'insert', key: 'new-1', record: newInsert },
+      ],
+    }) as CommitBatchResult;
+
+    // Rollback
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    // State should be exactly as before commitBatch
+    const fetchedR1 = await txCall({ type: 'get', key: r1.id }) as StoreRecord;
+    expect(fetchedR1.score).toBe(10);
+    expect(fetchedR1._version).toBe(1);
+
+    const fetchedR2 = await txCall({ type: 'get', key: r2.id }) as StoreRecord;
+    expect(fetchedR2).toBeDefined();
+    expect(fetchedR2.name).toBe('B');
+
+    expect(await txCall({ type: 'get', key: 'new-1' })).toBeUndefined();
+  });
+
+  it('undo_update restores indexes — lookup returns correct result', async () => {
+    const inserted = await txCall({ type: 'insert', data: { name: 'A', email: 'old@x.cz' } }) as StoreRecord;
+    const newRecord = { ...inserted, email: 'new@x.cz', _version: 2, _updatedAt: Date.now() } as StoreRecord;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'update', key: inserted.id, newRecord, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    // Old email should be in index again
+    const byOld = await txCall({ type: 'where', filter: { email: 'old@x.cz' } }) as StoreRecord[];
+    expect(byOld).toHaveLength(1);
+
+    // New email should be gone
+    const byNew = await txCall({ type: 'where', filter: { email: 'new@x.cz' } }) as StoreRecord[];
+    expect(byNew).toHaveLength(0);
+  });
+
+  it('rollbackBatch does NOT publish events on EventBus', async () => {
+    const events: unknown[] = [];
+    await EventBus.subscribe(eventBusRef, 'bucket.rb-test.*', (msg) => { events.push(msg); });
+
+    const inserted = await txCall({ type: 'insert', data: { name: 'X' } }) as StoreRecord;
+    // Clear insert event
+    await delay(50);
+    events.length = 0;
+
+    const result = await txCall({
+      type: 'commitBatch',
+      operations: [
+        { type: 'delete', key: inserted.id, expectedVersion: 1 },
+      ],
+    }) as CommitBatchResult;
+
+    await txCall({ type: 'rollbackBatch', undoOps: result.undoOps });
+
+    await delay(50);
+    // No events from commitBatch or rollbackBatch
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ── getAutoincrementCounter ──────────────────────────────────────
+
+describe('BucketServer getAutoincrementCounter', () => {
+  it('returns 0 for fresh bucket', async () => {
+    const counter = await call({ type: 'getAutoincrementCounter' });
+    expect(counter).toBe(0);
+  });
+
+  it('returns incremented counter after insert', async () => {
+    await call({ type: 'insert', data: { name: 'Alice' } });
+    const counter = await call({ type: 'getAutoincrementCounter' });
+    expect(counter).toBe(1);
+  });
+
+  it('returns correct counter after multiple inserts', async () => {
+    await call({ type: 'insert', data: { name: 'A' } });
+    await call({ type: 'insert', data: { name: 'B' } });
+    await call({ type: 'insert', data: { name: 'C' } });
+    const counter = await call({ type: 'getAutoincrementCounter' });
+    expect(counter).toBe(3);
   });
 });
 

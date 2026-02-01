@@ -174,6 +174,48 @@ export class IndexManager {
   }
 
   /**
+   * Validate unique constraints for a new record without modifying indexes.
+   * Throws UniqueConstraintError if any constraint would be violated.
+   */
+  validateInsert(_primaryKey: unknown, record: Record<string, unknown>): void {
+    for (const [field, index] of this.#indexes) {
+      if (index.kind !== 'unique') continue;
+      const value = record[field];
+      if (value == null) continue;
+
+      const existingKey = index.valueToKey.get(value);
+      if (existingKey !== undefined) {
+        throw new UniqueConstraintError(this.#bucketName, field, value);
+      }
+    }
+  }
+
+  /**
+   * Validate unique constraints for an update without modifying indexes.
+   * Only checks fields whose value changed. Allows self-reference (same primary key).
+   * Throws UniqueConstraintError if any constraint would be violated.
+   */
+  validateUpdate(
+    primaryKey: unknown,
+    oldRecord: Record<string, unknown>,
+    newRecord: Record<string, unknown>,
+  ): void {
+    for (const [field, index] of this.#indexes) {
+      if (index.kind !== 'unique') continue;
+
+      const oldValue = oldRecord[field];
+      const newValue = newRecord[field];
+      if (newValue === oldValue) continue;
+      if (newValue == null) continue;
+
+      const existingKey = index.valueToKey.get(newValue);
+      if (existingKey !== undefined && existingKey !== primaryKey) {
+        throw new UniqueConstraintError(this.#bucketName, field, newValue);
+      }
+    }
+  }
+
+  /**
    * Look up primary keys by indexed field value.
    *
    * Returns an array of primary keys, or `undefined` if the field is not indexed
