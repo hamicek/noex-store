@@ -1,8 +1,9 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketEvent, QueryContext, QueryFn } from '../types/index.js';
+import type { BucketDefinition, BucketEvent, QueryContext, QueryFn, StorePersistenceConfig } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
-import { createBucketBehavior, type BucketRef } from './bucket-server.js';
+import { createBucketBehavior, type BucketInitialData, type BucketRef } from './bucket-server.js';
+import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
 
 // ── Error classes ─────────────────────────────────────────────────
@@ -45,6 +46,7 @@ export class UniqueConstraintError extends Error {
 
 export interface StoreOptions {
   readonly name?: string;
+  readonly persistence?: StorePersistenceConfig;
 }
 
 // ── Store ─────────────────────────────────────────────────────────
@@ -58,16 +60,19 @@ export class Store {
   readonly #definitions = new Map<string, BucketDefinition>();
   readonly #refs = new Map<string, BucketRef>();
   readonly #queryManager: QueryManager;
+  readonly #persistence: StorePersistence | null;
   #eventBusUnsub: (() => Promise<void>) | null = null;
 
   private constructor(
     name: string,
     supervisorRef: SupervisorRef,
     eventBusRef: EventBusRef,
+    persistence: StorePersistence | null,
   ) {
     this.#name = name;
     this.#supervisorRef = supervisorRef;
     this.#eventBusRef = eventBusRef;
+    this.#persistence = persistence;
     this.#queryManager = new QueryManager((n) => this.bucket(n));
   }
 
@@ -84,7 +89,13 @@ export class Store {
       name: `${name}:supervisor`,
     });
 
-    const store = new Store(name, supervisorRef, eventBusRef);
+    let persistence: StorePersistence | null = null;
+    if (options?.persistence) {
+      persistence = new StorePersistence(name, options.persistence);
+      await persistence.start(eventBusRef);
+    }
+
+    const store = new Store(name, supervisorRef, eventBusRef, persistence);
     await store.#initReactiveLayer();
     return store;
   }
@@ -97,7 +108,14 @@ export class Store {
     this.#validateDefinition(name, definition);
     this.#definitions.set(name, definition);
 
-    const behavior = createBucketBehavior(name, definition, this.#eventBusRef);
+    let initialData: BucketInitialData | undefined;
+    const isPersistent = this.#persistence !== null && (definition.persistent ?? true);
+
+    if (isPersistent) {
+      initialData = await this.#persistence!.loadBucket(name);
+    }
+
+    const behavior = createBucketBehavior(name, definition, this.#eventBusRef, initialData);
     const registryName = `${this.#name}:bucket:${name}`;
 
     const ref = await Supervisor.startChild(this.#supervisorRef, {
@@ -106,6 +124,10 @@ export class Store {
     }) as BucketRef;
 
     this.#refs.set(name, ref);
+
+    if (isPersistent) {
+      this.#persistence!.registerBucket(name, ref);
+    }
   }
 
   bucket(name: string): BucketHandle {
@@ -165,6 +187,12 @@ export class Store {
   async stop(): Promise<void> {
     this.#queryManager.destroy();
     await this.#eventBusUnsub?.();
+
+    // Flush and stop persistence BEFORE stopping BucketServers
+    // (persistence.stop needs to send getSnapshot messages to live BucketServers)
+    if (this.#persistence) {
+      await this.#persistence.stop();
+    }
 
     await Supervisor.stop(this.#supervisorRef);
     await EventBus.stop(this.#eventBusRef);
