@@ -39,7 +39,7 @@ export type { ValidationIssue } from './core/schema-validator.js';
 export { ValidationError, SchemaValidator } from './core/schema-validator.js';
 
 // Core — Bucket Server
-export type { BucketCallMsg, BucketCallReply, BucketRef, BucketSnapshot, BucketInitialData } from './core/bucket-server.js';
+export type { BucketCallMsg, BucketCallReply, BucketRef, BucketSnapshot, BucketInitialData, BucketStats } from './core/bucket-server.js';
 export { createBucketBehavior } from './core/bucket-server.js';
 
 // Core — Index Manager
@@ -49,7 +49,7 @@ export { IndexManager } from './core/index-manager.js';
 export { BucketHandle } from './core/bucket-handle.js';
 
 // Core — Store
-export type { StoreOptions } from './core/store.js';
+export type { StoreOptions, StoreStats } from './core/store.js';
 export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError, TransactionConflictError } from './core/store.js';
 export { QueryAlreadyDefinedError, QueryNotDefinedError } from './core/query-errors.js';
 

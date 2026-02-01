@@ -123,6 +123,14 @@ export class QueryManager {
     }
   }
 
+  get queryCount(): number {
+    return this.#queries.size;
+  }
+
+  get subscriptionCount(): number {
+    return this.#subscriptions.size;
+  }
+
   destroy(): void {
     this.#subscriptions.clear();
     this.#bucketLevelIndex.clear();

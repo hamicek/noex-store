@@ -2,12 +2,41 @@ import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
 import type { BucketDefinition, BucketEvent, QueryContext, QueryFn, StorePersistenceConfig } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
-import { createBucketBehavior, type BucketInitialData, type BucketRef } from './bucket-server.js';
+import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketStats } from './bucket-server.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
 import { TtlManager } from '../lifecycle/ttl-manager.js';
 import { parseTtl } from '../utils/parse-ttl.js';
 import { TransactionContext } from '../transaction/transaction.js';
+
+// ── Stats type ──────────────────────────────────────────────────
+
+export interface StoreStats {
+  readonly name: string;
+  readonly buckets: {
+    readonly count: number;
+    readonly names: readonly string[];
+  };
+  readonly records: {
+    readonly total: number;
+    readonly perBucket: Readonly<Record<string, number>>;
+  };
+  readonly indexes: {
+    readonly total: number;
+    readonly perBucket: Readonly<Record<string, number>>;
+  };
+  readonly queries: {
+    readonly defined: number;
+    readonly activeSubscriptions: number;
+  };
+  readonly persistence: {
+    readonly enabled: boolean;
+  };
+  readonly ttl: {
+    readonly enabled: boolean;
+    readonly checkIntervalMs: number;
+  };
+}
 
 // ── Error classes ─────────────────────────────────────────────────
 
@@ -202,6 +231,39 @@ export class Store {
    */
   async purgeTtl(): Promise<number> {
     return this.#ttlManager.purge();
+  }
+
+  async getStats(): Promise<StoreStats> {
+    const bucketNames = [...this.#definitions.keys()];
+    const perBucketRecords: Record<string, number> = {};
+    const perBucketIndexes: Record<string, number> = {};
+    let totalRecords = 0;
+    let totalIndexes = 0;
+
+    for (const name of bucketNames) {
+      const ref = this.#refs.get(name)!;
+      const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+      perBucketRecords[name] = stats.recordCount;
+      perBucketIndexes[name] = stats.indexCount;
+      totalRecords += stats.recordCount;
+      totalIndexes += stats.indexCount;
+    }
+
+    return {
+      name: this.#name,
+      buckets: { count: bucketNames.length, names: bucketNames },
+      records: { total: totalRecords, perBucket: perBucketRecords },
+      indexes: { total: totalIndexes, perBucket: perBucketIndexes },
+      queries: {
+        defined: this.#queryManager.queryCount,
+        activeSubscriptions: this.#queryManager.subscriptionCount,
+      },
+      persistence: { enabled: this.#persistence !== null },
+      ttl: {
+        enabled: this.#ttlManager.enabled,
+        checkIntervalMs: this.#ttlManager.checkIntervalMs,
+      },
+    };
   }
 
   async on<T = BucketEvent>(

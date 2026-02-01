@@ -30,6 +30,14 @@ export class TtlManager {
     return this.#buckets.size;
   }
 
+  get enabled(): boolean {
+    return this.#running;
+  }
+
+  get checkIntervalMs(): number {
+    return this.#checkIntervalMs;
+  }
+
   registerBucket(name: string, ref: BucketRef, ttlMs: number): void {
     this.#buckets.set(name, { ref, ttlMs });
   }
