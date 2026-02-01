@@ -62,3 +62,19 @@ export { TtlManager } from './lifecycle/ttl-manager.js';
 // Reactive
 export { QueryContextImpl } from './reactive/query-context.js';
 export { QueryManager } from './reactive/query-manager.js';
+
+// Transaction
+export { TransactionContext } from './transaction/transaction.js';
+export { WriteBuffer, BucketWriteBuffer } from './transaction/write-buffer.js';
+export { TransactionBucketHandle } from './transaction/transaction-bucket-handle.js';
+export type {
+  CommitBatchOp,
+  CommitInsertOp,
+  CommitUpdateOp,
+  CommitDeleteOp,
+  UndoOp,
+  UndoInsertOp,
+  UndoUpdateOp,
+  UndoDeleteOp,
+  CommitBatchResult,
+} from './core/bucket-server.js';
