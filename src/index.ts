@@ -78,3 +78,7 @@ export type {
   UndoDeleteOp,
   CommitBatchResult,
 } from './core/bucket-server.js';
+
+// Bridge (re-export for convenience; primary import is '@hamicek/noex-store/bridge')
+export { bridgeStoreToRules } from './bridge/rules-bridge.js';
+export type { EventReceiver, BridgeOptions } from './bridge/rules-bridge.js';
