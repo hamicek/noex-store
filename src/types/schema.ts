@@ -33,6 +33,10 @@ export interface BucketDefinition {
   readonly etsType?: EtsTableType;
   /** Opt-out of persistence. Default: `true` when store has persistence configured. */
   readonly persistent?: boolean;
+  /** Time-to-live per record. Number = ms, string = human-readable ("1s", "30m", "1h", "7d", "90d"). */
+  readonly ttl?: number | string;
+  /** Maximum number of records. Oldest records (by _createdAt) are evicted on overflow. */
+  readonly maxSize?: number;
 }
 
 export interface StorePersistenceConfig {
