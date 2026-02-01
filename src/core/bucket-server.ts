@@ -74,7 +74,6 @@ export function createBucketBehavior(
       const validator = new SchemaValidator(bucketName, definition.schema, definition.key);
       const indexManager = new IndexManager(
         bucketName,
-        definition.key,
         definition.indexes ?? [],
         definition.schema,
       );

@@ -21,17 +21,14 @@ type IndexStore = UniqueIndex | NonUniqueIndex;
 
 export class IndexManager {
   readonly #bucketName: string;
-  readonly #keyField: string;
   readonly #indexes: Map<string, IndexStore>;
 
   constructor(
     bucketName: string,
-    keyField: string,
     indexedFields: readonly string[],
     schema: SchemaDefinition,
   ) {
     this.#bucketName = bucketName;
-    this.#keyField = keyField;
     this.#indexes = new Map();
 
     const indexedSet = new Set(indexedFields);

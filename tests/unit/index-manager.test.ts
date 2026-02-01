@@ -17,7 +17,7 @@ function makeManager(
   indexedFields: readonly string[] = ['email', 'tier'],
   overrideSchema: SchemaDefinition = schema,
 ): IndexManager {
-  return new IndexManager('test', 'id', indexedFields, overrideSchema);
+  return new IndexManager('test', indexedFields, overrideSchema);
 }
 
 // ── Construction ────────────────────────────────────────────────
