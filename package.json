@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge/rules-bridge.d.ts",
+      "import": "./dist/bridge/rules-bridge.js"
     }
   },
   "scripts": {
@@ -16,7 +20,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "bench": "tsx benchmarks/crud.bench.ts && tsx benchmarks/queries.bench.ts && tsx benchmarks/reactive.bench.ts",
+    "bench:crud": "tsx benchmarks/crud.bench.ts",
+    "bench:queries": "tsx benchmarks/queries.bench.ts",
+    "bench:reactive": "tsx benchmarks/reactive.bench.ts"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -27,6 +35,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
   }
