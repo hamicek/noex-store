@@ -31,6 +31,7 @@ export {
   isValidEmail,
   isValidUrl,
   isValidIsoDate,
+  parseTtl,
 } from './utils/index.js';
 
 // Core — Schema Validator
@@ -54,6 +55,9 @@ export { QueryAlreadyDefinedError, QueryNotDefinedError } from './core/query-err
 
 // Persistence
 export { StorePersistence } from './persistence/store-persistence.js';
+
+// Lifecycle
+export { TtlManager } from './lifecycle/ttl-manager.js';
 
 // Reactive
 export { QueryContextImpl } from './reactive/query-context.js';
