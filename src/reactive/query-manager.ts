@@ -1,4 +1,5 @@
 import type { BucketHandle } from '../core/bucket-handle.js';
+import type { QueryDependencies } from '../types/query.js';
 import {
   QueryAlreadyDefinedError,
   QueryNotDefinedError,
@@ -23,7 +24,7 @@ interface Subscription {
   readonly params: unknown;
   readonly callback: (result: unknown) => void;
   lastResult: unknown;
-  dependencies: ReadonlySet<string>;
+  dependencies: QueryDependencies;
 }
 
 // ── QueryManager ──────────────────────────────────────────────────
@@ -124,7 +125,7 @@ export class QueryManager {
     if (!this.#subscriptions.has(sub.id)) return;
 
     let newResult: unknown;
-    let newDependencies: ReadonlySet<string>;
+    let newDependencies: QueryDependencies;
 
     try {
       const ctx = new QueryContextImpl(this.#bucketAccessor);
@@ -139,7 +140,7 @@ export class QueryManager {
     if (!this.#subscriptions.has(sub.id)) return;
 
     // Update dependency index if dependencies changed
-    if (!this.#setsEqual(sub.dependencies, newDependencies)) {
+    if (!this.#depsEqual(sub.dependencies, newDependencies)) {
       this.#removeDependencies(sub.id, sub.dependencies);
       this.#indexDependencies(sub.id, newDependencies);
       sub.dependencies = newDependencies;
@@ -183,29 +184,56 @@ export class QueryManager {
     return params === undefined ? fn(ctx) : fn(ctx, params);
   }
 
-  #indexDependencies(subId: string, dependencies: ReadonlySet<string>): void {
-    for (const bucket of dependencies) {
-      let subs = this.#dependencyIndex.get(bucket);
-      if (subs === undefined) {
-        subs = new Set();
-        this.#dependencyIndex.set(bucket, subs);
-      }
-      subs.add(subId);
+  #indexDependencies(subId: string, deps: QueryDependencies): void {
+    for (const bucket of deps.bucketLevel) {
+      this.#addToDependencyIndex(bucket, subId);
+    }
+    // Record-level deps are also indexed at bucket granularity
+    // (record-level invalidation optimisation is added in a later step)
+    for (const bucket of deps.recordLevel.keys()) {
+      this.#addToDependencyIndex(bucket, subId);
     }
   }
 
-  #removeDependencies(subId: string, dependencies: ReadonlySet<string>): void {
-    for (const bucket of dependencies) {
-      const subs = this.#dependencyIndex.get(bucket);
-      if (subs === undefined) continue;
-      subs.delete(subId);
-      if (subs.size === 0) {
-        this.#dependencyIndex.delete(bucket);
-      }
+  #removeDependencies(subId: string, deps: QueryDependencies): void {
+    for (const bucket of deps.bucketLevel) {
+      this.#removeFromDependencyIndex(bucket, subId);
+    }
+    for (const bucket of deps.recordLevel.keys()) {
+      this.#removeFromDependencyIndex(bucket, subId);
     }
   }
 
-  #setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  #addToDependencyIndex(bucket: string, subId: string): void {
+    let subs = this.#dependencyIndex.get(bucket);
+    if (subs === undefined) {
+      subs = new Set();
+      this.#dependencyIndex.set(bucket, subs);
+    }
+    subs.add(subId);
+  }
+
+  #removeFromDependencyIndex(bucket: string, subId: string): void {
+    const subs = this.#dependencyIndex.get(bucket);
+    if (subs === undefined) return;
+    subs.delete(subId);
+    if (subs.size === 0) {
+      this.#dependencyIndex.delete(bucket);
+    }
+  }
+
+  #depsEqual(a: QueryDependencies, b: QueryDependencies): boolean {
+    if (!this.#setsEqual(a.bucketLevel, b.bucketLevel)) return false;
+    if (a.recordLevel.size !== b.recordLevel.size) return false;
+    for (const [bucket, keysA] of a.recordLevel) {
+      const keysB = b.recordLevel.get(bucket);
+      if (keysB === undefined) return false;
+      if (!this.#setsEqual(keysA, keysB)) return false;
+    }
+    return true;
+  }
+
+  #setsEqual(a: ReadonlySet<unknown>, b: ReadonlySet<unknown>): boolean {
     if (a.size !== b.size) return false;
     for (const item of a) {
       if (!b.has(item)) return false;

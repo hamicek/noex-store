@@ -16,6 +16,7 @@ const customersDef: BucketDefinition = {
     id: { type: 'string', generated: 'uuid' },
     name: { type: 'string', required: true },
     tier: { type: 'string', enum: ['basic', 'vip'], default: 'basic' },
+    score: { type: 'number', default: 0 },
   },
 };
 
@@ -59,49 +60,197 @@ afterEach(async () => {
   if (EventBus.isRunning(eventBusRef)) await EventBus.stop(eventBusRef);
 });
 
-// ── Dependency tracking ───────────────────────────────────────────
+// ── Two-level dependency tracking ────────────────────────────────
 
-describe('QueryContextImpl dependency tracking', () => {
-  it('records a single bucket access', () => {
+describe('QueryContextImpl two-level dependency tracking', () => {
+  it('get() creates a record-level dependency', async () => {
+    const handle = bucketAccessor('customers');
+    const inserted = await handle.insert({ name: 'Alice' });
+
     const ctx = new QueryContextImpl(bucketAccessor);
-    ctx.bucket('customers');
+    await ctx.bucket('customers').get(inserted.id);
 
-    expect(ctx.getDependencies()).toEqual(new Set(['customers']));
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel.size).toBe(0);
+    expect(deps.recordLevel.size).toBe(1);
+    expect(deps.recordLevel.get('customers')).toEqual(new Set([inserted.id]));
   });
 
-  it('records accesses to multiple distinct buckets', () => {
+  it('where() creates a bucket-level dependency', async () => {
     const ctx = new QueryContextImpl(bucketAccessor);
-    ctx.bucket('customers');
-    ctx.bucket('orders');
+    await ctx.bucket('customers').where({ tier: 'vip' });
 
-    expect(ctx.getDependencies()).toEqual(new Set(['customers', 'orders']));
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
   });
 
-  it('deduplicates repeated accesses to the same bucket', () => {
+  it('all() creates a bucket-level dependency', async () => {
     const ctx = new QueryContextImpl(bucketAccessor);
-    ctx.bucket('customers');
-    ctx.bucket('customers');
-    ctx.bucket('customers');
+    await ctx.bucket('customers').all();
 
-    expect(ctx.getDependencies()).toEqual(new Set(['customers']));
-    expect(ctx.getDependencies().size).toBe(1);
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
   });
 
-  it('starts with an empty dependency set', () => {
+  it('findOne() creates a bucket-level dependency', async () => {
     const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').findOne({ tier: 'vip' });
 
-    expect(ctx.getDependencies().size).toBe(0);
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
   });
 
-  it('returns a read-only set (no add method exposed)', () => {
+  it('count() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').count();
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('first() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').first(5);
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('last() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').last(5);
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('paginate() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').paginate({ limit: 10 });
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('sum() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').sum('score');
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('avg() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').avg('score');
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('min() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').min('score');
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('max() creates a bucket-level dependency', async () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').max('score');
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('get + where on same bucket — bucket-level subsumes record-level', async () => {
+    const handle = bucketAccessor('customers');
+    const inserted = await handle.insert({ name: 'Alice' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').get(inserted.id);
+    await ctx.bucket('customers').where({ tier: 'vip' });
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers']));
+    // record-level key is still tracked, but bucket-level takes precedence
+    expect(deps.recordLevel.get('customers')).toEqual(new Set([inserted.id]));
+  });
+
+  it('get on different buckets creates separate record-level entries', async () => {
+    const customersHandle = bucketAccessor('customers');
+    const customer = await customersHandle.insert({ name: 'Alice' });
+    const ordersHandle = bucketAccessor('orders');
+    const order = await ordersHandle.insert({ amount: 100 });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').get(customer.id);
+    await ctx.bucket('orders').get(order.id);
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel.size).toBe(0);
+    expect(deps.recordLevel.size).toBe(2);
+    expect(deps.recordLevel.get('customers')).toEqual(new Set([customer.id]));
+    expect(deps.recordLevel.get('orders')).toEqual(new Set([order.id]));
+  });
+
+  it('multiple get() on same bucket accumulates keys', async () => {
+    const handle = bucketAccessor('customers');
+    const a = await handle.insert({ name: 'Alice' });
+    const b = await handle.insert({ name: 'Bob' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').get(a.id);
+    await ctx.bucket('customers').get(b.id);
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel.size).toBe(0);
+    expect(deps.recordLevel.get('customers')).toEqual(new Set([a.id, b.id]));
+  });
+
+  it('mixed query — get from one bucket, where from another', async () => {
+    const handle = bucketAccessor('customers');
+    const customer = await handle.insert({ name: 'Alice' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    await ctx.bucket('customers').get(customer.id);
+    await ctx.bucket('orders').where({ customerId: customer.id });
+
+    const deps = ctx.getDependencies();
+    // orders is bucket-level (where)
+    expect(deps.bucketLevel).toEqual(new Set(['orders']));
+    // customers is record-level (get)
+    expect(deps.recordLevel.size).toBe(1);
+    expect(deps.recordLevel.get('customers')).toEqual(new Set([customer.id]));
+  });
+
+  it('starts with empty dependencies', () => {
+    const ctx = new QueryContextImpl(bucketAccessor);
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel.size).toBe(0);
+    expect(deps.recordLevel.size).toBe(0);
+  });
+
+  it('bucket() alone does not create any dependency', () => {
     const ctx = new QueryContextImpl(bucketAccessor);
     ctx.bucket('customers');
 
     const deps = ctx.getDependencies();
-    // ReadonlySet doesn't expose add/delete/clear
-    expect('add' in deps).toBe(true); // Set has add, but type says ReadonlySet
-    // The important thing is the type contract — runtime Set is fine
-    expect(deps.has('customers')).toBe(true);
+    expect(deps.bucketLevel.size).toBe(0);
+    expect(deps.recordLevel.size).toBe(0);
   });
 });
 
@@ -118,6 +267,13 @@ describe('QueryBucketHandle read-only API', () => {
     expect(typeof qBucket.where).toBe('function');
     expect(typeof qBucket.findOne).toBe('function');
     expect(typeof qBucket.count).toBe('function');
+    expect(typeof qBucket.first).toBe('function');
+    expect(typeof qBucket.last).toBe('function');
+    expect(typeof qBucket.paginate).toBe('function');
+    expect(typeof qBucket.sum).toBe('function');
+    expect(typeof qBucket.avg).toBe('function');
+    expect(typeof qBucket.min).toBe('function');
+    expect(typeof qBucket.max).toBe('function');
 
     // Write methods must not be present
     expect('insert' in qBucket).toBe(false);
@@ -221,6 +377,87 @@ describe('QueryBucketHandle delegation', () => {
     expect(vipCount).toBe(2);
   });
 
+  it('first() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice' });
+    await handle.insert({ name: 'Bob' });
+    await handle.insert({ name: 'Carol' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').first(2);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it('last() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice' });
+    await handle.insert({ name: 'Bob' });
+    await handle.insert({ name: 'Carol' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').last(2);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it('paginate() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice' });
+    await handle.insert({ name: 'Bob' });
+    await handle.insert({ name: 'Carol' });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').paginate({ limit: 2 });
+
+    expect(result.records).toHaveLength(2);
+    expect(result.hasMore).toBe(true);
+  });
+
+  it('sum() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice', score: 10 });
+    await handle.insert({ name: 'Bob', score: 20 });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').sum('score');
+
+    expect(result).toBe(30);
+  });
+
+  it('avg() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice', score: 10 });
+    await handle.insert({ name: 'Bob', score: 20 });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').avg('score');
+
+    expect(result).toBe(15);
+  });
+
+  it('min() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice', score: 10 });
+    await handle.insert({ name: 'Bob', score: 20 });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').min('score');
+
+    expect(result).toBe(10);
+  });
+
+  it('max() delegates correctly', async () => {
+    const handle = bucketAccessor('customers');
+    await handle.insert({ name: 'Alice', score: 10 });
+    await handle.insert({ name: 'Bob', score: 20 });
+
+    const ctx = new QueryContextImpl(bucketAccessor);
+    const result = await ctx.bucket('customers').max('score');
+
+    expect(result).toBe(20);
+  });
+
   it('delegates to different buckets independently', async () => {
     const customersHandle = bucketAccessor('customers');
     await customersHandle.insert({ name: 'Alice' });
@@ -235,6 +472,8 @@ describe('QueryBucketHandle delegation', () => {
 
     expect(customersCount).toBe(1);
     expect(ordersCount).toBe(2);
-    expect(ctx.getDependencies()).toEqual(new Set(['customers', 'orders']));
+
+    const deps = ctx.getDependencies();
+    expect(deps.bucketLevel).toEqual(new Set(['customers', 'orders']));
   });
 });
