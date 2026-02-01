@@ -6,6 +6,7 @@ import {
   type BucketCallMsg,
   type BucketCallReply,
   type BucketSnapshot,
+  type BucketStats,
   type BucketInitialData,
   type CommitBatchOp,
   type CommitBatchResult,
@@ -1759,6 +1760,130 @@ describe('BucketServer getAutoincrementCounter', () => {
     await call({ type: 'insert', data: { name: 'C' } });
     const counter = await call({ type: 'getAutoincrementCounter' });
     expect(counter).toBe(3);
+  });
+});
+
+describe('BucketServer getStats', () => {
+  it('returns stats for empty bucket', async () => {
+    const stats = await call({ type: 'getStats' }) as BucketStats;
+
+    expect(stats.recordCount).toBe(0);
+    expect(stats.indexCount).toBe(0);
+    expect(stats.indexNames).toEqual([]);
+    expect(stats.hasUniqueConstraints).toBe(false);
+    expect(stats.autoincrementCounter).toBe(0);
+    expect(stats.etsType).toBe('set');
+    expect(stats.hasTtl).toBe(false);
+    expect(stats.hasMaxSize).toBe(false);
+    expect(stats.maxSize).toBeUndefined();
+  });
+
+  it('reflects record count after inserts', async () => {
+    await call({ type: 'insert', data: { name: 'Alice' } });
+    await call({ type: 'insert', data: { name: 'Bob' } });
+
+    const stats = await call({ type: 'getStats' }) as BucketStats;
+    expect(stats.recordCount).toBe(2);
+    expect(stats.autoincrementCounter).toBe(2);
+  });
+
+  it('reflects record count after delete', async () => {
+    const rec = await call({ type: 'insert', data: { name: 'Alice' } }) as StoreRecord;
+    await call({ type: 'delete', key: (rec as Record<string, unknown>).id });
+
+    const stats = await call({ type: 'getStats' }) as BucketStats;
+    expect(stats.recordCount).toBe(0);
+  });
+
+  it('reports indexes for bucket with indexed fields', async () => {
+    const defWithIndex: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id:   { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+        tier: { type: 'string', default: 'basic' },
+      },
+      indexes: ['tier'],
+    };
+    const ref = await startBucket('indexed-users', defWithIndex);
+    const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+
+    expect(stats.indexCount).toBe(1);
+    expect(stats.indexNames).toEqual(['tier']);
+    expect(stats.hasUniqueConstraints).toBe(false);
+
+    await GenServer.stop(ref);
+  });
+
+  it('reports unique constraints', async () => {
+    const defWithUnique: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id:    { type: 'string', generated: 'uuid' },
+        name:  { type: 'string', required: true },
+        email: { type: 'string', unique: true },
+      },
+    };
+    const ref = await startBucket('unique-users', defWithUnique);
+    const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+
+    expect(stats.indexCount).toBe(1);
+    expect(stats.indexNames).toEqual(['email']);
+    expect(stats.hasUniqueConstraints).toBe(true);
+
+    await GenServer.stop(ref);
+  });
+
+  it('reports TTL when configured', async () => {
+    const defWithTtl: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id:   { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+      },
+      ttl: '1h',
+    };
+    const ref = await startBucket('ttl-bucket', defWithTtl);
+    const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+
+    expect(stats.hasTtl).toBe(true);
+
+    await GenServer.stop(ref);
+  });
+
+  it('reports maxSize when configured', async () => {
+    const defWithMax: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id:   { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+      },
+      maxSize: 100,
+    };
+    const ref = await startBucket('max-bucket', defWithMax);
+    const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+
+    expect(stats.hasMaxSize).toBe(true);
+    expect(stats.maxSize).toBe(100);
+
+    await GenServer.stop(ref);
+  });
+
+  it('reports ordered_set etsType', async () => {
+    const orderedDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id:   { type: 'number', generated: 'autoincrement' },
+        name: { type: 'string', required: true },
+      },
+      etsType: 'ordered_set',
+    };
+    const ref = await startBucket('ordered-bucket', orderedDef);
+    const stats = await GenServer.call(ref, { type: 'getStats' }) as BucketStats;
+
+    expect(stats.etsType).toBe('ordered_set');
+
+    await GenServer.stop(ref);
   });
 });
 

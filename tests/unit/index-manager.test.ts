@@ -459,3 +459,43 @@ describe('IndexManager — validateUpdate', () => {
     expect(mgr.lookup('email', 'new@x.cz')).toEqual([]);
   });
 });
+
+describe('IndexManager — stat getters', () => {
+  it('indexCount returns number of indexes', () => {
+    const mgr = makeManager(['email', 'tier']);
+    // email (unique from schema) + tier (non-unique) + code (unique from schema, auto-added)
+    expect(mgr.indexCount).toBe(3);
+  });
+
+  it('indexCount is 0 when no indexes', () => {
+    const simpleSchema: SchemaDefinition = {
+      id:   { type: 'string' },
+      name: { type: 'string' },
+    };
+    const mgr = makeManager([], simpleSchema);
+    expect(mgr.indexCount).toBe(0);
+  });
+
+  it('indexNames returns all indexed field names', () => {
+    const mgr = makeManager(['email', 'tier']);
+    const names = mgr.indexNames;
+    expect(names).toContain('email');
+    expect(names).toContain('tier');
+    expect(names).toContain('code'); // auto-added from unique: true
+  });
+
+  it('hasUniqueConstraints is true when unique indexes exist', () => {
+    const mgr = makeManager(['email', 'tier']);
+    expect(mgr.hasUniqueConstraints).toBe(true);
+  });
+
+  it('hasUniqueConstraints is false when no unique indexes', () => {
+    const simpleSchema: SchemaDefinition = {
+      id:   { type: 'string' },
+      name: { type: 'string' },
+      tier: { type: 'string' },
+    };
+    const mgr = makeManager(['tier'], simpleSchema);
+    expect(mgr.hasUniqueConstraints).toBe(false);
+  });
+});

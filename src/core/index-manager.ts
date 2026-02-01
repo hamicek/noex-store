@@ -241,6 +241,24 @@ export class IndexManager {
     return this.#indexes.has(fieldName);
   }
 
+  /** Number of indexes managed by this instance. */
+  get indexCount(): number {
+    return this.#indexes.size;
+  }
+
+  /** Names of all indexed fields. */
+  get indexNames(): readonly string[] {
+    return [...this.#indexes.keys()];
+  }
+
+  /** Whether any index enforces a unique constraint. */
+  get hasUniqueConstraints(): boolean {
+    for (const index of this.#indexes.values()) {
+      if (index.kind === 'unique') return true;
+    }
+    return false;
+  }
+
   /** Clear all indexes. */
   clear(): void {
     for (const index of this.#indexes.values()) {

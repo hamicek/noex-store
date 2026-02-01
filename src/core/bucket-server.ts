@@ -77,6 +77,20 @@ export interface CommitBatchResult {
   readonly undoOps: readonly UndoOp[];
 }
 
+// ── Stats type ───────────────────────────────────────────────────────
+
+export interface BucketStats {
+  readonly recordCount: number;
+  readonly indexCount: number;
+  readonly indexNames: readonly string[];
+  readonly hasUniqueConstraints: boolean;
+  readonly autoincrementCounter: number;
+  readonly etsType: string;
+  readonly hasTtl: boolean;
+  readonly hasMaxSize: boolean;
+  readonly maxSize: number | undefined;
+}
+
 // ── Message types ──────────────────────────────────────────────────
 
 export type BucketCallMsg =
@@ -100,7 +114,8 @@ export type BucketCallMsg =
   | { readonly type: 'purgeExpired' }
   | { readonly type: 'commitBatch'; readonly operations: readonly CommitBatchOp[]; readonly autoincrementUpdate?: number }
   | { readonly type: 'rollbackBatch'; readonly undoOps: readonly UndoOp[] }
-  | { readonly type: 'getAutoincrementCounter' };
+  | { readonly type: 'getAutoincrementCounter' }
+  | { readonly type: 'getStats' };
 
 export type BucketCallReply =
   | StoreRecord
@@ -110,6 +125,7 @@ export type BucketCallReply =
   | BucketSnapshot
   | PaginatedResult
   | CommitBatchResult
+  | BucketStats
   | undefined;
 
 // ── State ──────────────────────────────────────────────────────────
@@ -215,6 +231,18 @@ export function createBucketBehavior(
           return [handleRollbackBatch(state, msg.undoOps), state];
         case 'getAutoincrementCounter':
           return [state.autoincrementCounter, state];
+        case 'getStats':
+          return [{
+            recordCount: state.table.size,
+            indexCount: state.indexManager.indexCount,
+            indexNames: state.indexManager.indexNames,
+            hasUniqueConstraints: state.indexManager.hasUniqueConstraints,
+            autoincrementCounter: state.autoincrementCounter,
+            etsType: definition.etsType ?? 'set',
+            hasTtl: definition.ttl !== undefined,
+            hasMaxSize: definition.maxSize !== undefined,
+            maxSize: definition.maxSize,
+          } satisfies BucketStats, state];
       }
     },
 
