@@ -20,3 +20,9 @@ export type {
   BucketDeletedEvent,
   BucketEvent,
 } from './events.js';
+
+export type {
+  QueryBucket,
+  QueryContext,
+  QueryFn,
+} from './query.js';
