@@ -7,6 +7,7 @@ import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
 import { TtlManager } from '../lifecycle/ttl-manager.js';
 import { parseTtl } from '../utils/parse-ttl.js';
+import { TransactionContext } from '../transaction/transaction.js';
 
 // ── Error classes ─────────────────────────────────────────────────
 
@@ -169,6 +170,13 @@ export class Store {
       throw new BucketNotDefinedError(name);
     }
     return new BucketHandle(name, ref);
+  }
+
+  async transaction<T>(fn: (tx: TransactionContext) => Promise<T>): Promise<T> {
+    const tx = new TransactionContext(this.#definitions, this.#refs, this.#eventBusRef);
+    const result = await fn(tx);
+    await tx.commit();
+    return result;
   }
 
   async dropBucket(name: string): Promise<void> {
