@@ -17,6 +17,9 @@ export type {
   QueryBucket,
   QueryContext,
   QueryFn,
+  PaginateOptions,
+  PaginatedResult,
+  QueryDependencies,
   StorePersistenceConfig,
 } from './types/index.js';
 

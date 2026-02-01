@@ -1,4 +1,4 @@
-import type { QueryBucket, QueryContext } from '../types/query.js';
+import type { QueryBucket, QueryContext, PaginateOptions, PaginatedResult } from '../types/query.js';
 import type { BucketHandle } from '../core/bucket-handle.js';
 import type { StoreRecord } from '../types/record.js';
 
@@ -34,6 +34,34 @@ class QueryBucketHandle implements QueryBucket {
 
   count(filter?: Record<string, unknown>): Promise<number> {
     return this.#handle.count(filter);
+  }
+
+  first(_n: number): Promise<StoreRecord[]> {
+    throw new Error('Not implemented — requires BucketHandle.first');
+  }
+
+  last(_n: number): Promise<StoreRecord[]> {
+    throw new Error('Not implemented — requires BucketHandle.last');
+  }
+
+  paginate(_options: PaginateOptions): Promise<PaginatedResult> {
+    throw new Error('Not implemented — requires BucketHandle.paginate');
+  }
+
+  sum(_field: string, _filter?: Record<string, unknown>): Promise<number> {
+    throw new Error('Not implemented — requires BucketHandle.sum');
+  }
+
+  avg(_field: string, _filter?: Record<string, unknown>): Promise<number> {
+    throw new Error('Not implemented — requires BucketHandle.avg');
+  }
+
+  min(_field: string, _filter?: Record<string, unknown>): Promise<number | undefined> {
+    throw new Error('Not implemented — requires BucketHandle.min');
+  }
+
+  max(_field: string, _filter?: Record<string, unknown>): Promise<number | undefined> {
+    throw new Error('Not implemented — requires BucketHandle.max');
   }
 }
 

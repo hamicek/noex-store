@@ -23,6 +23,9 @@ export type {
 } from './events.js';
 
 export type {
+  PaginateOptions,
+  PaginatedResult,
+  QueryDependencies,
   QueryBucket,
   QueryContext,
   QueryFn,
