@@ -32,7 +32,8 @@ interface Subscription {
 export class QueryManager {
   readonly #queries = new Map<string, QueryDefinition>();
   readonly #subscriptions = new Map<string, Subscription>();
-  readonly #dependencyIndex = new Map<string, Set<string>>();
+  readonly #bucketLevelIndex = new Map<string, Set<string>>();
+  readonly #recordLevelIndex = new Map<string, Map<unknown, Set<string>>>();
   readonly #bucketAccessor: (name: string) => BucketHandle;
   readonly #pendingEvaluations = new Set<Promise<void>>();
   #nextSubId = 0;
@@ -88,11 +89,25 @@ export class QueryManager {
     return this.#executeQuery(definition.fn, ctx, params);
   }
 
-  onBucketChange(bucketName: string): void {
-    const subIds = this.#dependencyIndex.get(bucketName);
-    if (subIds === undefined) return;
+  onBucketChange(bucketName: string, key: unknown): void {
+    const affectedSubIds = new Set<string>();
 
-    for (const subId of subIds) {
+    // Bucket-level: all subscriptions with a bucket-level dependency
+    const bucketSubs = this.#bucketLevelIndex.get(bucketName);
+    if (bucketSubs !== undefined) {
+      for (const subId of bucketSubs) affectedSubIds.add(subId);
+    }
+
+    // Record-level: only subscriptions tracking this specific key
+    const bucketRecords = this.#recordLevelIndex.get(bucketName);
+    if (bucketRecords !== undefined) {
+      const keySubs = bucketRecords.get(key);
+      if (keySubs !== undefined) {
+        for (const subId of keySubs) affectedSubIds.add(subId);
+      }
+    }
+
+    for (const subId of affectedSubIds) {
       const sub = this.#subscriptions.get(subId);
       if (sub === undefined) continue;
 
@@ -110,7 +125,8 @@ export class QueryManager {
 
   destroy(): void {
     this.#subscriptions.clear();
-    this.#dependencyIndex.clear();
+    this.#bucketLevelIndex.clear();
+    this.#recordLevelIndex.clear();
     this.#queries.clear();
     this.#pendingEvaluations.clear();
   }
@@ -186,39 +202,49 @@ export class QueryManager {
 
   #indexDependencies(subId: string, deps: QueryDependencies): void {
     for (const bucket of deps.bucketLevel) {
-      this.#addToDependencyIndex(bucket, subId);
+      let subs = this.#bucketLevelIndex.get(bucket);
+      if (subs === undefined) {
+        subs = new Set();
+        this.#bucketLevelIndex.set(bucket, subs);
+      }
+      subs.add(subId);
     }
-    // Record-level deps are also indexed at bucket granularity
-    // (record-level invalidation optimisation is added in a later step)
-    for (const bucket of deps.recordLevel.keys()) {
-      this.#addToDependencyIndex(bucket, subId);
+
+    for (const [bucket, keys] of deps.recordLevel) {
+      let bucketMap = this.#recordLevelIndex.get(bucket);
+      if (bucketMap === undefined) {
+        bucketMap = new Map();
+        this.#recordLevelIndex.set(bucket, bucketMap);
+      }
+      for (const key of keys) {
+        let subs = bucketMap.get(key);
+        if (subs === undefined) {
+          subs = new Set();
+          bucketMap.set(key, subs);
+        }
+        subs.add(subId);
+      }
     }
   }
 
   #removeDependencies(subId: string, deps: QueryDependencies): void {
     for (const bucket of deps.bucketLevel) {
-      this.#removeFromDependencyIndex(bucket, subId);
+      const subs = this.#bucketLevelIndex.get(bucket);
+      if (subs === undefined) continue;
+      subs.delete(subId);
+      if (subs.size === 0) this.#bucketLevelIndex.delete(bucket);
     }
-    for (const bucket of deps.recordLevel.keys()) {
-      this.#removeFromDependencyIndex(bucket, subId);
-    }
-  }
 
-  #addToDependencyIndex(bucket: string, subId: string): void {
-    let subs = this.#dependencyIndex.get(bucket);
-    if (subs === undefined) {
-      subs = new Set();
-      this.#dependencyIndex.set(bucket, subs);
-    }
-    subs.add(subId);
-  }
-
-  #removeFromDependencyIndex(bucket: string, subId: string): void {
-    const subs = this.#dependencyIndex.get(bucket);
-    if (subs === undefined) return;
-    subs.delete(subId);
-    if (subs.size === 0) {
-      this.#dependencyIndex.delete(bucket);
+    for (const [bucket, keys] of deps.recordLevel) {
+      const bucketMap = this.#recordLevelIndex.get(bucket);
+      if (bucketMap === undefined) continue;
+      for (const key of keys) {
+        const subs = bucketMap.get(key);
+        if (subs === undefined) continue;
+        subs.delete(subId);
+        if (subs.size === 0) bucketMap.delete(key);
+      }
+      if (bucketMap.size === 0) this.#recordLevelIndex.delete(bucket);
     }
   }
 

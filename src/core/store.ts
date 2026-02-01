@@ -206,7 +206,7 @@ export class Store {
       this.#eventBusRef,
       'bucket.*.*',
       (event) => {
-        this.#queryManager.onBucketChange(event.bucket);
+        this.#queryManager.onBucketChange(event.bucket, event.key);
       },
     );
   }

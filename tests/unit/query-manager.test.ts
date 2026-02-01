@@ -197,7 +197,7 @@ describe('re-evaluation via onBucketChange', () => {
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice', tier: 'vip' });
 
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(callback).toHaveBeenCalledTimes(1);
@@ -216,7 +216,7 @@ describe('re-evaluation via onBucketChange', () => {
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Bob', tier: 'basic' });
 
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(callback).not.toHaveBeenCalled();
@@ -229,7 +229,7 @@ describe('re-evaluation via onBucketChange', () => {
     await manager.subscribe('vips', callback);
 
     // Change in 'orders' bucket — unrelated to 'customers'
-    manager.onBucketChange('orders');
+    manager.onBucketChange('orders', 'any-key');
     await manager.waitForPending();
 
     expect(callback).not.toHaveBeenCalled();
@@ -243,11 +243,11 @@ describe('re-evaluation via onBucketChange', () => {
 
     const handle = bucketAccessor('customers');
     const alice = await handle.insert({ name: 'Alice', tier: 'vip' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     await handle.insert({ name: 'Bob', tier: 'vip' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(callback).toHaveBeenCalledTimes(2);
@@ -276,7 +276,7 @@ describe('parameterized subscriptions', () => {
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice', tier: 'vip' });
 
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     // VIP callback should fire (result changed from [] to [Alice])
@@ -306,14 +306,14 @@ describe('dependency tracking updates', () => {
     // Change in orders should NOT trigger re-evaluation
     const ordersHandle = bucketAccessor('orders');
     await ordersHandle.insert({ customerId: 'x', amount: 100 });
-    manager.onBucketChange('orders');
+    manager.onBucketChange('orders', 'any-key');
     await manager.waitForPending();
     expect(callback).not.toHaveBeenCalled();
 
     // Now add a VIP → re-evaluation reads both buckets
     const customersHandle = bucketAccessor('customers');
     await customersHandle.insert({ name: 'Alice', tier: 'vip' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(callback).toHaveBeenCalledTimes(1);
@@ -321,7 +321,7 @@ describe('dependency tracking updates', () => {
     // Now orders is a dependency — change in orders triggers re-evaluation
     callback.mockClear();
     await ordersHandle.insert({ customerId: 'y', amount: 200 });
-    manager.onBucketChange('orders');
+    manager.onBucketChange('orders', 'any-key');
     await manager.waitForPending();
 
     expect(callback).toHaveBeenCalledTimes(1);
@@ -344,7 +344,7 @@ describe('multiple subscriptions', () => {
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice' });
 
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(cb1).toHaveBeenCalledTimes(1);
@@ -362,7 +362,7 @@ describe('multiple subscriptions', () => {
 
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(customerCb).toHaveBeenCalledTimes(1);
@@ -381,14 +381,14 @@ describe('unsubscribe', () => {
 
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
     expect(callback).toHaveBeenCalledTimes(1);
 
     unsub();
 
     await handle.insert({ name: 'Bob' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     // Should still be 1 — no new calls after unsub
@@ -416,7 +416,7 @@ describe('unsubscribe', () => {
 
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice' });
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
 
     expect(cb1).not.toHaveBeenCalled();
@@ -444,13 +444,13 @@ describe('error handling in re-evaluation', () => {
 
     // First re-evaluation throws
     shouldThrow = true;
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
     expect(callback).not.toHaveBeenCalled();
 
     // Recovery — query works again
     shouldThrow = false;
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
     await manager.waitForPending();
     expect(callback).toHaveBeenCalledTimes(1);
   });
@@ -470,7 +470,7 @@ describe('waitForPending', () => {
     const handle = bucketAccessor('customers');
     await handle.insert({ name: 'Alice' });
 
-    manager.onBucketChange('customers');
+    manager.onBucketChange('customers', 'any-key');
 
     // waitForPending should resolve without hanging
     await expect(manager.waitForPending()).resolves.toBeUndefined();
