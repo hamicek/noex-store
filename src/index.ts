@@ -14,6 +14,9 @@ export type {
   BucketUpdatedEvent,
   BucketDeletedEvent,
   BucketEvent,
+  QueryBucket,
+  QueryContext,
+  QueryFn,
 } from './types/index.js';
 
 // Utils
@@ -44,3 +47,7 @@ export { BucketHandle } from './core/bucket-handle.js';
 export type { StoreOptions } from './core/store.js';
 export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError } from './core/store.js';
 export { QueryAlreadyDefinedError, QueryNotDefinedError } from './core/query-errors.js';
+
+// Reactive
+export { QueryContextImpl } from './reactive/query-context.js';
+export { QueryManager } from './reactive/query-manager.js';
