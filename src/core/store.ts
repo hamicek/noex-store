@@ -1,8 +1,9 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketEvent } from '../types/index.js';
+import type { BucketDefinition, BucketEvent, QueryContext, QueryFn } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketRef } from './bucket-server.js';
+import { QueryManager } from '../reactive/query-manager.js';
 
 // ── Error classes ─────────────────────────────────────────────────
 
@@ -40,26 +41,6 @@ export class UniqueConstraintError extends Error {
   }
 }
 
-export class QueryAlreadyDefinedError extends Error {
-  readonly query: string;
-
-  constructor(query: string) {
-    super(`Query "${query}" is already defined`);
-    this.name = 'QueryAlreadyDefinedError';
-    this.query = query;
-  }
-}
-
-export class QueryNotDefinedError extends Error {
-  readonly query: string;
-
-  constructor(query: string) {
-    super(`Query "${query}" is not defined`);
-    this.name = 'QueryNotDefinedError';
-    this.query = query;
-  }
-}
-
 // ── Options ───────────────────────────────────────────────────────
 
 export interface StoreOptions {
@@ -76,6 +57,8 @@ export class Store {
   readonly #eventBusRef: EventBusRef;
   readonly #definitions = new Map<string, BucketDefinition>();
   readonly #refs = new Map<string, BucketRef>();
+  readonly #queryManager: QueryManager;
+  #eventBusUnsub: (() => Promise<void>) | null = null;
 
   private constructor(
     name: string,
@@ -85,6 +68,7 @@ export class Store {
     this.#name = name;
     this.#supervisorRef = supervisorRef;
     this.#eventBusRef = eventBusRef;
+    this.#queryManager = new QueryManager((n) => this.bucket(n));
   }
 
   get name(): string {
@@ -100,7 +84,9 @@ export class Store {
       name: `${name}:supervisor`,
     });
 
-    return new Store(name, supervisorRef, eventBusRef);
+    const store = new Store(name, supervisorRef, eventBusRef);
+    await store.#initReactiveLayer();
+    return store;
   }
 
   async defineBucket(name: string, definition: BucketDefinition): Promise<void> {
@@ -137,12 +123,64 @@ export class Store {
     return EventBus.subscribe<T>(this.#eventBusRef, pattern, handler);
   }
 
+  defineQuery<TParams = void, TResult = unknown>(
+    name: string,
+    fn: QueryFn<TParams, TResult>,
+  ): void {
+    this.#queryManager.defineQuery(
+      name,
+      fn as (ctx: QueryContext, params?: unknown) => Promise<unknown>,
+    );
+  }
+
+  async subscribe<TResult = unknown>(
+    queryName: string,
+    callback: (result: TResult) => void,
+  ): Promise<() => void>;
+  async subscribe<TParams, TResult = unknown>(
+    queryName: string,
+    params: TParams,
+    callback: (result: TResult) => void,
+  ): Promise<() => void>;
+  async subscribe(
+    queryName: string,
+    paramsOrCallback: unknown,
+    maybeCallback?: unknown,
+  ): Promise<() => void> {
+    return this.#queryManager.subscribe(queryName, paramsOrCallback, maybeCallback);
+  }
+
+  async runQuery<TResult = unknown>(
+    queryName: string,
+    params?: unknown,
+  ): Promise<TResult> {
+    return this.#queryManager.runQuery(queryName, params) as Promise<TResult>;
+  }
+
+  async settle(): Promise<void> {
+    await EventBus.getSubscriptionCount(this.#eventBusRef);
+    await this.#queryManager.waitForPending();
+  }
+
   async stop(): Promise<void> {
+    this.#queryManager.destroy();
+    await this.#eventBusUnsub?.();
+
     await Supervisor.stop(this.#supervisorRef);
     await EventBus.stop(this.#eventBusRef);
 
     this.#definitions.clear();
     this.#refs.clear();
+  }
+
+  async #initReactiveLayer(): Promise<void> {
+    this.#eventBusUnsub = await EventBus.subscribe<BucketEvent>(
+      this.#eventBusRef,
+      'bucket.*.*',
+      (event) => {
+        this.#queryManager.onBucketChange(event.bucket);
+      },
+    );
   }
 
   #validateDefinition(name: string, definition: BucketDefinition): void {

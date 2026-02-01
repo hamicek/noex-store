@@ -42,11 +42,5 @@ export { BucketHandle } from './core/bucket-handle.js';
 
 // Core — Store
 export type { StoreOptions } from './core/store.js';
-export {
-  Store,
-  BucketAlreadyExistsError,
-  BucketNotDefinedError,
-  UniqueConstraintError,
-  QueryAlreadyDefinedError,
-  QueryNotDefinedError,
-} from './core/store.js';
+export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError } from './core/store.js';
+export { QueryAlreadyDefinedError, QueryNotDefinedError } from './core/query-errors.js';

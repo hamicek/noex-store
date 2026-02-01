@@ -1,35 +1,20 @@
-import type { QueryFn } from '../types/query.js';
 import type { BucketHandle } from '../core/bucket-handle.js';
+import {
+  QueryAlreadyDefinedError,
+  QueryNotDefinedError,
+} from '../core/query-errors.js';
 import { QueryContextImpl } from './query-context.js';
 import { deepEqual } from '../utils/deep-equal.js';
 
-// ── Error classes ─────────────────────────────────────────────────
-
-export class QueryAlreadyDefinedError extends Error {
-  readonly query: string;
-
-  constructor(query: string) {
-    super(`Query "${query}" is already defined`);
-    this.name = 'QueryAlreadyDefinedError';
-    this.query = query;
-  }
-}
-
-export class QueryNotDefinedError extends Error {
-  readonly query: string;
-
-  constructor(query: string) {
-    super(`Query "${query}" is not defined`);
-    this.name = 'QueryNotDefinedError';
-    this.query = query;
-  }
-}
+export { QueryAlreadyDefinedError, QueryNotDefinedError };
 
 // ── Internal types ────────────────────────────────────────────────
 
+type AnyQueryFn = (ctx: QueryContextImpl, params?: unknown) => Promise<unknown>;
+
 interface QueryDefinition {
   readonly name: string;
-  readonly fn: QueryFn<any, any>;
+  readonly fn: AnyQueryFn;
 }
 
 interface Subscription {
@@ -55,7 +40,7 @@ export class QueryManager {
     this.#bucketAccessor = bucketAccessor;
   }
 
-  defineQuery(name: string, fn: QueryFn<any, any>): void {
+  defineQuery(name: string, fn: AnyQueryFn): void {
     if (this.#queries.has(name)) {
       throw new QueryAlreadyDefinedError(name);
     }
@@ -191,7 +176,7 @@ export class QueryManager {
   }
 
   async #executeQuery(
-    fn: QueryFn<any, any>,
+    fn: AnyQueryFn,
     ctx: QueryContextImpl,
     params: unknown,
   ): Promise<unknown> {
