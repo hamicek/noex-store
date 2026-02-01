@@ -1,5 +1,5 @@
 import { GenServer } from '@hamicek/noex';
-import type { StoreRecord } from '../types/index.js';
+import type { PaginateOptions, PaginatedResult, StoreRecord } from '../types/index.js';
 import type { BucketRef } from './bucket-server.js';
 
 /**
@@ -65,5 +65,56 @@ export class BucketHandle {
 
   async clear(): Promise<void> {
     await GenServer.call(this.#ref, { type: 'clear' });
+  }
+
+  async first(n: number): Promise<StoreRecord[]> {
+    const reply = await GenServer.call(this.#ref, { type: 'first', n });
+    return reply as StoreRecord[];
+  }
+
+  async last(n: number): Promise<StoreRecord[]> {
+    const reply = await GenServer.call(this.#ref, { type: 'last', n });
+    return reply as StoreRecord[];
+  }
+
+  async paginate(options: PaginateOptions): Promise<PaginatedResult> {
+    const reply = await GenServer.call(this.#ref, {
+      type: 'paginate',
+      after: options.after,
+      limit: options.limit,
+    });
+    return reply as PaginatedResult;
+  }
+
+  async sum(field: string, filter?: Record<string, unknown>): Promise<number> {
+    const msg = filter !== undefined
+      ? { type: 'sum' as const, field, filter }
+      : { type: 'sum' as const, field };
+    const reply = await GenServer.call(this.#ref, msg);
+    return reply as number;
+  }
+
+  async avg(field: string, filter?: Record<string, unknown>): Promise<number> {
+    const msg = filter !== undefined
+      ? { type: 'avg' as const, field, filter }
+      : { type: 'avg' as const, field };
+    const reply = await GenServer.call(this.#ref, msg);
+    return reply as number;
+  }
+
+  async min(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+    const msg = filter !== undefined
+      ? { type: 'min' as const, field, filter }
+      : { type: 'min' as const, field };
+    const reply = await GenServer.call(this.#ref, msg);
+    return reply as number | undefined;
+  }
+
+  async max(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+    const msg = filter !== undefined
+      ? { type: 'max' as const, field, filter }
+      : { type: 'max' as const, field };
+    const reply = await GenServer.call(this.#ref, msg);
+    return reply as number | undefined;
   }
 }

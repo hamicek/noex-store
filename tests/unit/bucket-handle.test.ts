@@ -5,7 +5,7 @@ import {
   createBucketBehavior,
   type BucketRef,
 } from '../../src/core/bucket-server.js';
-import type { BucketDefinition, StoreRecord } from '../../src/types/index.js';
+import type { BucketDefinition, PaginatedResult, StoreRecord } from '../../src/types/index.js';
 import { ValidationError } from '../../src/core/schema-validator.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
@@ -211,5 +211,233 @@ describe('BucketHandle validation', () => {
     await expect(
       handle.update(inserted.id, { name: '' }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+// ── first / last through handle ───────────────────────────────────
+
+describe('BucketHandle first/last', () => {
+  const numDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      label: { type: 'string', required: true },
+    },
+    etsType: 'ordered_set',
+  };
+
+  let numHandle: BucketHandle;
+  let numRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('nums', numDef, eventBusRef);
+    numRef = await GenServer.start(behavior) as BucketRef;
+    numHandle = new BucketHandle('nums', numRef);
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(numRef)) {
+      await GenServer.stop(numRef);
+    }
+  });
+
+  it('first() on empty bucket returns empty array', async () => {
+    const result = await numHandle.first(5);
+    expect(result).toEqual([]);
+  });
+
+  it('first(n) returns first n records sorted by key', async () => {
+    await numHandle.insert({ label: 'a' });
+    await numHandle.insert({ label: 'b' });
+    await numHandle.insert({ label: 'c' });
+    await numHandle.insert({ label: 'd' });
+
+    const result = await numHandle.first(2);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.id).toBe(1);
+    expect(result[1]!.id).toBe(2);
+  });
+
+  it('first(n) with n > count returns all records', async () => {
+    await numHandle.insert({ label: 'x' });
+    const result = await numHandle.first(100);
+    expect(result).toHaveLength(1);
+  });
+
+  it('last(n) returns last n records sorted by key', async () => {
+    await numHandle.insert({ label: 'a' });
+    await numHandle.insert({ label: 'b' });
+    await numHandle.insert({ label: 'c' });
+    await numHandle.insert({ label: 'd' });
+
+    const result = await numHandle.last(2);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.id).toBe(3);
+    expect(result[1]!.id).toBe(4);
+  });
+
+  it('last(n) with n > count returns all records', async () => {
+    await numHandle.insert({ label: 'x' });
+    await numHandle.insert({ label: 'y' });
+    const result = await numHandle.last(50);
+    expect(result).toHaveLength(2);
+  });
+});
+
+// ── paginate through handle ───────────────────────────────────────
+
+describe('BucketHandle paginate', () => {
+  const pagDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'number', generated: 'autoincrement' },
+      label: { type: 'string', required: true },
+    },
+    etsType: 'ordered_set',
+  };
+
+  let pagHandle: BucketHandle;
+  let pagRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('pag', pagDef, eventBusRef);
+    pagRef = await GenServer.start(behavior) as BucketRef;
+    pagHandle = new BucketHandle('pag', pagRef);
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(pagRef)) {
+      await GenServer.stop(pagRef);
+    }
+  });
+
+  it('first page returns records with hasMore and nextCursor', async () => {
+    for (let i = 0; i < 5; i++) await pagHandle.insert({ label: `r${i}` });
+
+    const page = await pagHandle.paginate({ limit: 2 });
+    expect(page.records).toHaveLength(2);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toBe(2);
+  });
+
+  it('cursor-based traversal covers all records', async () => {
+    for (let i = 0; i < 5; i++) await pagHandle.insert({ label: `r${i}` });
+
+    const page1 = await pagHandle.paginate({ limit: 2 });
+    const page2 = await pagHandle.paginate({ after: page1.nextCursor, limit: 2 });
+    const page3 = await pagHandle.paginate({ after: page2.nextCursor, limit: 2 });
+
+    expect(page1.records).toHaveLength(2);
+    expect(page2.records).toHaveLength(2);
+    expect(page3.records).toHaveLength(1);
+    expect(page3.hasMore).toBe(false);
+
+    const allIds = [
+      ...page1.records,
+      ...page2.records,
+      ...page3.records,
+    ].map((r) => r.id);
+    expect(allIds).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('empty bucket returns no records', async () => {
+    const page = await pagHandle.paginate({ limit: 10 });
+    expect(page.records).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  it('non-existing cursor returns empty result', async () => {
+    await pagHandle.insert({ label: 'only' });
+    const page = await pagHandle.paginate({ after: 999, limit: 10 });
+    expect(page.records).toEqual([]);
+    expect(page.hasMore).toBe(false);
+  });
+});
+
+// ── aggregations through handle ───────────────────────────────────
+
+describe('BucketHandle aggregations', () => {
+  const aggDef: BucketDefinition = {
+    key: 'id',
+    schema: {
+      id: { type: 'string', generated: 'uuid' },
+      name: { type: 'string', required: true },
+      score: { type: 'number', default: 0 },
+      tier: { type: 'string', enum: ['basic', 'vip'], default: 'basic' },
+    },
+    indexes: ['tier'],
+  };
+
+  let aggHandle: BucketHandle;
+  let aggRef: BucketRef;
+
+  beforeEach(async () => {
+    const behavior = createBucketBehavior('agg', aggDef, eventBusRef);
+    aggRef = await GenServer.start(behavior) as BucketRef;
+    aggHandle = new BucketHandle('agg', aggRef);
+  });
+
+  afterEach(async () => {
+    if (GenServer.isRunning(aggRef)) {
+      await GenServer.stop(aggRef);
+    }
+  });
+
+  async function seedAgg(): Promise<void> {
+    await aggHandle.insert({ name: 'Alice', score: 10, tier: 'vip' });
+    await aggHandle.insert({ name: 'Bob', score: 20 });
+    await aggHandle.insert({ name: 'Carol', score: 30, tier: 'vip' });
+  }
+
+  it('sum() returns total of field values', async () => {
+    await seedAgg();
+    const result = await aggHandle.sum('score');
+    expect(result).toBe(60);
+  });
+
+  it('sum() with filter sums only matching records', async () => {
+    await seedAgg();
+    const result = await aggHandle.sum('score', { tier: 'vip' });
+    expect(result).toBe(40);
+  });
+
+  it('sum() on empty bucket returns 0', async () => {
+    const result = await aggHandle.sum('score');
+    expect(result).toBe(0);
+  });
+
+  it('avg() returns average of field values', async () => {
+    await seedAgg();
+    const result = await aggHandle.avg('score');
+    expect(result).toBe(20);
+  });
+
+  it('avg() on empty bucket returns 0', async () => {
+    const result = await aggHandle.avg('score');
+    expect(result).toBe(0);
+  });
+
+  it('min() returns smallest field value', async () => {
+    await seedAgg();
+    const result = await aggHandle.min('score');
+    expect(result).toBe(10);
+  });
+
+  it('min() on empty bucket returns undefined', async () => {
+    const result = await aggHandle.min('score');
+    expect(result).toBeUndefined();
+  });
+
+  it('max() returns largest field value', async () => {
+    await seedAgg();
+    const result = await aggHandle.max('score');
+    expect(result).toBe(30);
+  });
+
+  it('max() with filter returns max of matching records', async () => {
+    await seedAgg();
+    const result = await aggHandle.max('score', { tier: 'basic' });
+    expect(result).toBe(20);
   });
 });
