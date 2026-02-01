@@ -44,6 +44,20 @@ export class UniqueConstraintError extends Error {
   }
 }
 
+export class TransactionConflictError extends Error {
+  readonly bucket: string;
+  readonly key: unknown;
+  readonly field: string | undefined;
+
+  constructor(bucket: string, key: unknown, message: string, field?: string) {
+    super(`Transaction conflict in bucket "${bucket}" for key "${String(key)}": ${message}`);
+    this.name = 'TransactionConflictError';
+    this.bucket = bucket;
+    this.key = key;
+    this.field = field;
+  }
+}
+
 // ── Options ───────────────────────────────────────────────────────
 
 export interface StoreOptions {
