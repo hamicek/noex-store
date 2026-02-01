@@ -5,6 +5,8 @@ import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef } from './bucket-server.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
+import { TtlManager } from '../lifecycle/ttl-manager.js';
+import { parseTtl } from '../utils/parse-ttl.js';
 
 // ── Error classes ─────────────────────────────────────────────────
 
@@ -47,6 +49,8 @@ export class UniqueConstraintError extends Error {
 export interface StoreOptions {
   readonly name?: string;
   readonly persistence?: StorePersistenceConfig;
+  /** Interval (ms) for TTL expiration checks. Default: 1000. Set to 0 to disable automatic checks. */
+  readonly ttlCheckIntervalMs?: number;
 }
 
 // ── Store ─────────────────────────────────────────────────────────
@@ -61,6 +65,7 @@ export class Store {
   readonly #refs = new Map<string, BucketRef>();
   readonly #queryManager: QueryManager;
   readonly #persistence: StorePersistence | null;
+  readonly #ttlManager: TtlManager;
   #eventBusUnsub: (() => Promise<void>) | null = null;
 
   private constructor(
@@ -68,11 +73,13 @@ export class Store {
     supervisorRef: SupervisorRef,
     eventBusRef: EventBusRef,
     persistence: StorePersistence | null,
+    ttlManager: TtlManager,
   ) {
     this.#name = name;
     this.#supervisorRef = supervisorRef;
     this.#eventBusRef = eventBusRef;
     this.#persistence = persistence;
+    this.#ttlManager = ttlManager;
     this.#queryManager = new QueryManager((n) => this.bucket(n));
   }
 
@@ -95,8 +102,16 @@ export class Store {
       await persistence.start(eventBusRef);
     }
 
-    const store = new Store(name, supervisorRef, eventBusRef, persistence);
+    const checkIntervalMs = options?.ttlCheckIntervalMs ?? 1_000;
+    const ttlManager = new TtlManager(checkIntervalMs);
+
+    const store = new Store(name, supervisorRef, eventBusRef, persistence, ttlManager);
     await store.#initReactiveLayer();
+
+    if (checkIntervalMs > 0) {
+      ttlManager.start();
+    }
+
     return store;
   }
 
@@ -128,6 +143,10 @@ export class Store {
     if (isPersistent) {
       this.#persistence!.registerBucket(name, ref);
     }
+
+    if (definition.ttl !== undefined) {
+      this.#ttlManager.registerBucket(name, ref, parseTtl(definition.ttl));
+    }
   }
 
   bucket(name: string): BucketHandle {
@@ -136,6 +155,31 @@ export class Store {
       throw new BucketNotDefinedError(name);
     }
     return new BucketHandle(name, ref);
+  }
+
+  async dropBucket(name: string): Promise<void> {
+    if (!this.#definitions.has(name)) {
+      throw new BucketNotDefinedError(name);
+    }
+
+    this.#ttlManager.unregisterBucket(name);
+
+    if (this.#persistence) {
+      this.#persistence.unregisterBucket(name);
+    }
+
+    await Supervisor.terminateChild(this.#supervisorRef, name);
+
+    this.#definitions.delete(name);
+    this.#refs.delete(name);
+  }
+
+  /**
+   * Manually trigger TTL expiration check on all TTL-enabled buckets.
+   * Returns the total number of purged records.
+   */
+  async purgeTtl(): Promise<number> {
+    return this.#ttlManager.purge();
   }
 
   async on<T = BucketEvent>(
@@ -185,6 +229,7 @@ export class Store {
   }
 
   async stop(): Promise<void> {
+    this.#ttlManager.stop();
     this.#queryManager.destroy();
     await this.#eventBusUnsub?.();
 
