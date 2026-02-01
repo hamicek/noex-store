@@ -14,6 +14,18 @@ import type {
 import { IndexManager } from './index-manager.js';
 import { SchemaValidator } from './schema-validator.js';
 
+// ── Persistence types ─────────────────────────────────────────────
+
+export interface BucketSnapshot {
+  readonly records: ReadonlyArray<readonly [unknown, StoreRecord]>;
+  readonly autoincrementCounter: number;
+}
+
+export interface BucketInitialData {
+  readonly records: ReadonlyArray<readonly [unknown, StoreRecord]>;
+  readonly autoincrementCounter: number;
+}
+
 // ── Message types ──────────────────────────────────────────────────
 
 export type BucketCallMsg =
@@ -25,12 +37,14 @@ export type BucketCallMsg =
   | { readonly type: 'where'; readonly filter: Record<string, unknown> }
   | { readonly type: 'findOne'; readonly filter: Record<string, unknown> }
   | { readonly type: 'count'; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'clear' };
+  | { readonly type: 'clear' }
+  | { readonly type: 'getSnapshot' };
 
 export type BucketCallReply =
   | StoreRecord
   | StoreRecord[]
   | number
+  | BucketSnapshot
   | undefined;
 
 // ── State ──────────────────────────────────────────────────────────
@@ -52,20 +66,29 @@ export function createBucketBehavior(
   bucketName: string,
   definition: BucketDefinition,
   eventBusRef: EventBusRef,
+  initialData?: BucketInitialData,
 ): GenServerBehavior<BucketState, BucketCallMsg, never, BucketCallReply> {
   return {
     init(): BucketState {
-      return {
-        table: new Map(),
-        validator: new SchemaValidator(bucketName, definition.schema, definition.key),
-        indexManager: new IndexManager(
-          bucketName,
-          definition.key,
-          definition.indexes ?? [],
-          definition.schema,
-        ),
-        autoincrementCounter: 0,
-      };
+      const table = new Map<unknown, StoreRecord>();
+      const validator = new SchemaValidator(bucketName, definition.schema, definition.key);
+      const indexManager = new IndexManager(
+        bucketName,
+        definition.key,
+        definition.indexes ?? [],
+        definition.schema,
+      );
+      let autoincrementCounter = 0;
+
+      if (initialData) {
+        autoincrementCounter = initialData.autoincrementCounter;
+        for (const [key, record] of initialData.records) {
+          indexManager.addRecord(key, record as Record<string, unknown>);
+          table.set(key, record);
+        }
+      }
+
+      return { table, validator, indexManager, autoincrementCounter };
     },
 
     handleCall(
@@ -98,6 +121,11 @@ export function createBucketBehavior(
           state.indexManager.clear();
           state.table.clear();
           return [undefined, state];
+        case 'getSnapshot':
+          return [{
+            records: [...state.table.entries()],
+            autoincrementCounter: state.autoincrementCounter,
+          } satisfies BucketSnapshot, state];
       }
     },
 

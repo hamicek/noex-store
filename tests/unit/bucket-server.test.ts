@@ -5,6 +5,8 @@ import {
   type BucketRef,
   type BucketCallMsg,
   type BucketCallReply,
+  type BucketSnapshot,
+  type BucketInitialData,
 } from '../../src/core/bucket-server.js';
 import type {
   BucketDefinition,
@@ -14,6 +16,7 @@ import type {
   StoreRecord,
 } from '../../src/types/index.js';
 import { ValidationError } from '../../src/core/schema-validator.js';
+import { UniqueConstraintError } from '../../src/core/store.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -389,6 +392,198 @@ describe('BucketServer with autoincrement key', () => {
     }) as StoreRecord;
 
     expect(result.label).toBe('test');
+  });
+});
+
+// ── getSnapshot ──────────────────────────────────────────────────
+
+describe('BucketServer getSnapshot', () => {
+  it('returns empty snapshot for empty bucket', async () => {
+    const snapshot = await call({ type: 'getSnapshot' }) as BucketSnapshot;
+
+    expect(snapshot.records).toEqual([]);
+    expect(snapshot.autoincrementCounter).toBe(0);
+  });
+
+  it('returns records and counter after insert', async () => {
+    const record = await call({ type: 'insert', data: { name: 'Alice' } }) as StoreRecord;
+    const snapshot = await call({ type: 'getSnapshot' }) as BucketSnapshot;
+
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0]![0]).toBe(record.id);
+    expect(snapshot.records[0]![1]).toEqual(record);
+    expect(snapshot.autoincrementCounter).toBe(1);
+  });
+
+  it('reflects current state after insert, update, and delete', async () => {
+    const r1 = await call({ type: 'insert', data: { name: 'Alice' } }) as StoreRecord;
+    const r2 = await call({ type: 'insert', data: { name: 'Bob' } }) as StoreRecord;
+    await call({ type: 'update', key: r1.id, changes: { name: 'Alicia' } });
+    await call({ type: 'delete', key: r2.id });
+
+    const snapshot = await call({ type: 'getSnapshot' }) as BucketSnapshot;
+
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0]![1].name).toBe('Alicia');
+  });
+
+  it('tracks correct counter after multiple inserts', async () => {
+    let autoBucketRef: BucketRef;
+    const autoDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'number', generated: 'autoincrement' },
+        label: { type: 'string', required: true },
+      },
+    };
+    const behavior = createBucketBehavior('items', autoDef, eventBusRef);
+    autoBucketRef = await GenServer.start(behavior) as BucketRef;
+
+    await GenServer.call(autoBucketRef, { type: 'insert', data: { label: 'a' } });
+    await GenServer.call(autoBucketRef, { type: 'insert', data: { label: 'b' } });
+    await GenServer.call(autoBucketRef, { type: 'insert', data: { label: 'c' } });
+
+    const snapshot = await GenServer.call(autoBucketRef, { type: 'getSnapshot' }) as BucketSnapshot;
+
+    expect(snapshot.records).toHaveLength(3);
+    expect(snapshot.autoincrementCounter).toBe(3);
+
+    await GenServer.stop(autoBucketRef);
+  });
+});
+
+// ── initialData restore ──────────────────────────────────────────
+
+describe('BucketServer initialData restore', () => {
+  const now = Date.now();
+
+  const sampleRecords: ReadonlyArray<readonly [unknown, StoreRecord]> = [
+    ['id-1', { id: 'id-1', name: 'Alice', tier: 'vip', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+    ['id-2', { id: 'id-2', name: 'Bob', tier: 'basic', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+  ];
+
+  async function startWithInitialData(
+    bucketName: string,
+    definition: BucketDefinition,
+    initialData: BucketInitialData,
+  ): Promise<BucketRef> {
+    const behavior = createBucketBehavior(bucketName, definition, eventBusRef, initialData);
+    return GenServer.start(behavior) as Promise<BucketRef>;
+  }
+
+  it('restores records from initialData', async () => {
+    const ref = await startWithInitialData('users', usersDef, {
+      records: sampleRecords,
+      autoincrementCounter: 0,
+    });
+
+    const r1 = await GenServer.call(ref, { type: 'get', key: 'id-1' }) as StoreRecord;
+    const r2 = await GenServer.call(ref, { type: 'get', key: 'id-2' }) as StoreRecord;
+
+    expect(r1.name).toBe('Alice');
+    expect(r2.name).toBe('Bob');
+
+    const all = await GenServer.call(ref, { type: 'all' }) as StoreRecord[];
+    expect(all).toHaveLength(2);
+
+    await GenServer.stop(ref);
+  });
+
+  it('continues autoincrement counter from restored value', async () => {
+    const autoDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'number', generated: 'autoincrement' },
+        label: { type: 'string', required: true },
+      },
+    };
+
+    const ref = await startWithInitialData('items', autoDef, {
+      records: [
+        [1, { id: 1, label: 'first', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+        [2, { id: 2, label: 'second', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+        [3, { id: 3, label: 'third', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+      ],
+      autoincrementCounter: 3,
+    });
+
+    const newRecord = await GenServer.call(ref, {
+      type: 'insert',
+      data: { label: 'fourth' },
+    }) as StoreRecord;
+
+    expect(newRecord.id).toBe(4);
+
+    await GenServer.stop(ref);
+  });
+
+  it('rebuilds indexes from initialData — where() works', async () => {
+    const indexedDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+        tier: { type: 'string', enum: ['basic', 'vip'], default: 'basic' },
+      },
+      indexes: ['tier'],
+    };
+
+    const ref = await startWithInitialData('users', indexedDef, {
+      records: sampleRecords,
+      autoincrementCounter: 0,
+    });
+
+    const vips = await GenServer.call(ref, {
+      type: 'where',
+      filter: { tier: 'vip' },
+    }) as StoreRecord[];
+
+    expect(vips).toHaveLength(1);
+    expect(vips[0]!.name).toBe('Alice');
+
+    await GenServer.stop(ref);
+  });
+
+  it('rebuilds unique indexes — duplicate insert throws UniqueConstraintError', async () => {
+    const uniqueDef: BucketDefinition = {
+      key: 'id',
+      schema: {
+        id: { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+        email: { type: 'string', unique: true },
+      },
+    };
+
+    const ref = await startWithInitialData('users', uniqueDef, {
+      records: [
+        ['id-1', { id: 'id-1', name: 'Alice', email: 'alice@test.cz', _version: 1, _createdAt: now, _updatedAt: now } as StoreRecord],
+      ],
+      autoincrementCounter: 0,
+    });
+
+    await expect(
+      GenServer.call(ref, {
+        type: 'insert',
+        data: { name: 'Fake Alice', email: 'alice@test.cz' },
+      }),
+    ).rejects.toThrow(UniqueConstraintError);
+
+    await GenServer.stop(ref);
+  });
+
+  it('handles empty initialData gracefully', async () => {
+    const ref = await startWithInitialData('users', usersDef, {
+      records: [],
+      autoincrementCounter: 0,
+    });
+
+    const all = await GenServer.call(ref, { type: 'all' }) as StoreRecord[];
+    expect(all).toHaveLength(0);
+
+    const count = await GenServer.call(ref, { type: 'count' }) as number;
+    expect(count).toBe(0);
+
+    await GenServer.stop(ref);
   });
 });
 
