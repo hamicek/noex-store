@@ -25,7 +25,7 @@ This reference is organized by module. Each page documents every public method, 
 | Document | Description |
 |----------|-------------|
 | [Reactive Queries](./reactive-queries.md) | `defineQuery()`, `subscribe()`, `QueryContext`, dependency tracking, and deep-equality diffing |
-| [Events](./events.md) | `store.on()`, event types (`inserted`, `updated`, `deleted`, `batch`), and wildcard pattern matching |
+| [Events](./events.md) | `store.on()`, event types (`inserted`, `updated`, `deleted`), and wildcard pattern matching |
 
 ### Transactions
 
