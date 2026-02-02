@@ -168,7 +168,7 @@ store.defineQuery('userById', async (ctx, params: { id: string }) => {
 
 ### `store.subscribe(queryName, callback): Promise<() => void>`
 
-Subscribes to a reactive query without parameters. The callback fires immediately with the current result and again whenever the result changes (determined by deep equality).
+Subscribes to a reactive query without parameters. The query is evaluated immediately to establish the initial result and dependency set, but the callback is **not** invoked on the initial subscribe — it fires only on subsequent re-evaluations that produce a structurally different result (determined by deep equality).
 
 **Parameters:**
 
