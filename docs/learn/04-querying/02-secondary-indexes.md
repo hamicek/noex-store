@@ -426,6 +426,11 @@ main();
 - `null` and `undefined` values are not indexed — unique constraints are only enforced among non-null values
 - Indexes trade write performance (update cost on each mutation) for read performance (fast lookups)
 
+## API Reference
+
+- [BucketHandle API](../../reference/bucket-handle.md) — index-accelerated `where()` and `findOne()`
+- [Schema and Types](../../reference/schema.md) — `BucketDefinition.indexes` and `unique` automatic indexing
+
 ---
 
 Next: [Pagination and Aggregation](./03-pagination-and-aggregation.md)

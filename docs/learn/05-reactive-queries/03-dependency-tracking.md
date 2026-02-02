@@ -660,6 +660,10 @@ unsub2();
 - **Bucket-level subsumes record-level** on the same bucket — once `where()` or any scanning method is used, all mutations in that bucket trigger re-evaluation
 - Dependency tracking is **automatic and implicit** — you write normal query code and the store instruments it behind the scenes through `QueryContext`
 
+## API Reference
+
+- [Reactive Queries](../../reference/reactive-queries.md) — `QueryDependencies`, bucket-level vs record-level tracking, deep equality
+
 ---
 
 Next: [Event System](../06-events/01-event-system.md)

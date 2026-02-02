@@ -649,6 +649,11 @@ console.log(`Seats (unchanged): ${eventAfter?.availableSeats}`); // 48
 - Keep transaction callbacks **pure** — avoid side effects that shouldn't repeat on retry
 - Rollback is **best-effort**: in the rare case an undo fails, the store continues rolling back remaining buckets
 
+## API Reference
+
+- [Transactions](../../reference/transactions.md) — `_version` checking, optimistic locking, rollback mechanics
+- [Errors](../../reference/errors.md) — `TransactionConflictError` and retry patterns
+
 ---
 
 Next: [Persisting Data](../08-persistence/01-persisting-data.md)

@@ -474,6 +474,10 @@ console.log(enabledFlags.length); // 2 (dark-mode, new-checkout)
 - Persistence subscribes to the **EventBus** — the same events that drive reactive queries and your event handlers also trigger persistence
 - **`store.stop()`** flushes all dirty buckets before shutting down, ensuring no data is lost on graceful shutdown
 
+## API Reference
+
+- [Persistence](../../reference/persistence.md) — `StorePersistenceConfig`, adapters, debounce, per-bucket opt-out
+
 ---
 
 Next: [Recovery and Snapshots](./02-recovery-and-snapshots.md)

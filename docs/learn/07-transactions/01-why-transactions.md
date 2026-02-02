@@ -248,6 +248,10 @@ await store.transaction(async (tx) => {
 - noex-store uses **optimistic concurrency control** — no locks are held during the transaction, conflicts are detected at commit time
 - Use transactions for cross-bucket consistency; skip them for single-record operations
 
+## API Reference
+
+- [Transactions](../../reference/transactions.md) — `store.transaction()`, `TransactionContext`, atomicity guarantees
+
 ---
 
 Next: [Using Transactions](./02-using-transactions.md)

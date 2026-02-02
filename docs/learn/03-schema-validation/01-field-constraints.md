@@ -566,6 +566,11 @@ main();
 - `ValidationError` collects **all** issues in one throw, with `field`, `message`, and `code` per issue
 - Validation runs on both insert and update — updates validate the merged record
 
+## API Reference
+
+- [Schema and Types](../../reference/schema.md) — complete `FieldDefinition` reference with all constraints
+- [Errors](../../reference/errors.md) — `ValidationError` structure and `ValidationIssue` fields
+
 ---
 
 Next: [Auto-Generation](./02-auto-generation.md)

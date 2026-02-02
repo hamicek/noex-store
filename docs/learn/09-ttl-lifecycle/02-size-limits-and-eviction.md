@@ -528,6 +528,10 @@ console.log(await games.count()); // 5 — all records still present
 - On insert, the order is: validate, set `_expiresAt` (if TTL), evict (if at maxSize), store and index
 - **Bucket stats** expose `hasMaxSize`, `maxSize`, and `recordCount` for monitoring
 
+## API Reference
+
+- [TTL and Lifecycle](../../reference/ttl-lifecycle.md) — `maxSize`, LRU eviction, record metadata
+
 ---
 
 Next: [Supervision Tree](../10-architecture/01-supervision-tree.md)

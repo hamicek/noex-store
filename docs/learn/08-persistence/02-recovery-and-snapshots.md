@@ -552,6 +552,10 @@ await store2.stop();
 - **Load errors** result in graceful degradation — the bucket starts empty and the error is reported via `onError`
 - Transactions interact naturally — committed writes trigger events, which trigger persistence; rolled-back transactions trigger nothing
 
+## API Reference
+
+- [Persistence](../../reference/persistence.md) — `BucketSnapshot`, restore flow, `flushPersistence()`, corruption handling
+
 ---
 
 Next: [TTL Expiration](../09-ttl-lifecycle/01-ttl-expiration.md)

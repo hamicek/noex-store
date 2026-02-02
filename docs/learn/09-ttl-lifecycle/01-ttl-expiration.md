@@ -563,6 +563,10 @@ console.log(defaultLived._expiresAt); // ~60 seconds from now
 - TTL records **survive persistence** — `_expiresAt` is part of the record and is restored on restart; the first purge cycle removes records that expired during downtime
 - **Bucket stats** expose `hasTtl` and store stats expose `ttl.enabled` and `ttl.checkIntervalMs`
 
+## API Reference
+
+- [TTL and Lifecycle](../../reference/ttl-lifecycle.md) — `parseTtl()`, `TtlManager`, `_expiresAt`, `purgeTtl()`
+
 ---
 
 Next: [Size Limits and Eviction](./02-size-limits-and-eviction.md)

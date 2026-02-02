@@ -480,6 +480,15 @@ A team is building a real-time chat application. They need to store users, rooms
 - **Persistence** is adapter-based and opt-in per bucket
 - The **Supervision Tree** isolates bucket failures — one crash doesn't take down the others
 
+## API Reference
+
+- [Store API](../../reference/store.md) — complete `Store` class reference
+- [BucketHandle API](../../reference/bucket-handle.md) — all CRUD, query, and aggregation methods
+- [Schema and Types](../../reference/schema.md) — field definitions, constraints, and validation
+- [Reactive Queries](../../reference/reactive-queries.md) — query definition, subscription, and dependency tracking
+- [Transactions](../../reference/transactions.md) — transaction context and optimistic locking
+- [Events](../../reference/events.md) — event types and wildcard patterns
+
 ---
 
 Next: [Your First Store](../02-getting-started/01-first-store.md)

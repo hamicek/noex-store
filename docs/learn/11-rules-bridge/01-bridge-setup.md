@@ -555,6 +555,10 @@ The filter uses discriminated union narrowing: when `event.type === 'updated'`, 
 - Receiver errors are **caught and swallowed** — a failing or slow receiver never blocks or crashes the store's EventBus
 - The bridge is **one-way**: store events flow to the receiver, but the receiver cannot push events back through the bridge
 
+## API Reference
+
+- [Rules Bridge](../../reference/bridge.md) — `bridgeStoreToRules()`, `BridgeOptions`, `EventReceiver`
+
 ---
 
 Next: [Store-Driven Rules](./02-store-driven-rules.md)

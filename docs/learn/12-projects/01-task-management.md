@@ -860,6 +860,12 @@ await store.stop();
 - **`Math.max(0, count - 1)`** is a defensive pattern for denormalized counters to prevent negative values
 - **Natural keys** (like tag `name`) eliminate the need for generated identifiers when the domain provides a unique value
 
+## API Reference
+
+- [Store API](../../reference/store.md) — store setup and lifecycle
+- [BucketHandle API](../../reference/bucket-handle.md) — CRUD, filtering, pagination
+- [Reactive Queries](../../reference/reactive-queries.md) — `defineQuery()` and `subscribe()`
+
 ---
 
 Next: [Real-Time Analytics](./02-realtime-analytics.md)

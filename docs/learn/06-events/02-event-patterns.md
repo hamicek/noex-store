@@ -639,6 +639,10 @@ for (const a of allAlerts) {
 - Event handlers run after the mutation succeeds — a failing handler cannot roll back the original operation
 - Multiple patterns compose naturally: an audit log, notification handler, and cascade handler can all run simultaneously on the same store
 
+## API Reference
+
+- [Events](../../reference/events.md) — `BucketInsertedEvent`, `BucketUpdatedEvent`, `BucketDeletedEvent`, wildcard matching rules
+
 ---
 
 Next: [Why Transactions?](../07-transactions/01-why-transactions.md)

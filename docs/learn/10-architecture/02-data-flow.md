@@ -640,6 +640,11 @@ The store does not perform index intersection (combining results from multiple i
 - The IndexManager uses a **two-phase approach** for all writes: validate all constraints first, then write — preventing partial index corruption
 - **Validation errors** and **unique constraint violations** fail fast before any state is modified
 
+## API Reference
+
+- [Store API](../../reference/store.md) — store lifecycle, event bus, and internal architecture
+- [Events](../../reference/events.md) — event flow from BucketServer through EventBus
+
 ---
 
 Next: [Bridge Setup](../11-rules-bridge/01-bridge-setup.md)

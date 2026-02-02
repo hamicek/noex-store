@@ -701,6 +701,11 @@ The transaction ensures atomicity: if archiving any order fails, the session isn
 - Add **tracing** with a wrapper `EventReceiver` and `store.on('bucket.*.*')` to debug the full event cycle
 - The store remains **decoupled** from the rule engine — it never imports or references rules, making both independently testable
 
+## API Reference
+
+- [Rules Bridge](../../reference/bridge.md) — bidirectional integration, event mapping, loop prevention
+- [Events](../../reference/events.md) — event types forwarded to the rule engine
+
 ---
 
 Next: [Task Management](../12-projects/01-task-management.md)

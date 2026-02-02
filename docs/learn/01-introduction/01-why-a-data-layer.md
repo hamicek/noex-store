@@ -358,6 +358,10 @@ function deleteCompletedTasks() {
 - `@hamicek/noex-store` provides schema-enforced buckets, secondary indexes, reactive queries, transactions, events, TTL, and persistence — all configured declaratively
 - The application code shrinks to declaring what the data looks like and subscribing to changes — the store handles the rest
 
+## API Reference
+
+- [Reference Index](../../reference/index.md) — overview of all reference documents with quick links
+
 ---
 
 Next: [Key Concepts](./02-key-concepts.md)

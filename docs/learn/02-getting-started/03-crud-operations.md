@@ -643,6 +643,10 @@ The record was deleted, so `get()` returns `undefined`.
 - Validation collects all issues before throwing — the record is never stored on failure
 - Protected fields (key, generated, metadata) are silently stripped from update payloads
 
+## API Reference
+
+- [BucketHandle API](../../reference/bucket-handle.md) — `insert()`, `get()`, `update()`, `delete()`, `all()`, `where()`, `findOne()`, `count()`, `clear()`
+
 ---
 
 Next: [Field Constraints](../03-schema-validation/01-field-constraints.md)

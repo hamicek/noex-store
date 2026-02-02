@@ -472,6 +472,10 @@ await store.dropBucket('tenant:42:projects');
 - **Graceful shutdown** propagates in order: TtlManager stops, persistence flushes, supervisor terminates children, EventBus stops last
 - If a BucketServer crashes, pending requests fail, the bucket restarts empty (or from the last persistence snapshot), and sibling buckets continue uninterrupted
 
+## API Reference
+
+- [Store API](../../reference/store.md) — `Store.start()`, `store.stop()`, `getStats()`, supervision architecture
+
 ---
 
 Next: [Data Flow](./02-data-flow.md)

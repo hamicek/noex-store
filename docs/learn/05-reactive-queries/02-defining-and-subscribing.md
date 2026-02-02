@@ -618,6 +618,11 @@ unsubBob();
 - **Errors during initial subscribe** propagate to the caller; **errors during re-evaluation** are swallowed and the subscription survives
 - **Cross-bucket queries** read from multiple buckets and the store tracks dependencies on all of them automatically
 
+## API Reference
+
+- [Reactive Queries](../../reference/reactive-queries.md) — `QueryFn`, `QueryContext`, parameterized queries
+- [Store API](../../reference/store.md) — `defineQuery()`, `subscribe()`, `runQuery()`, `settle()`
+
 ---
 
 Next: [Dependency Tracking](./03-dependency-tracking.md)

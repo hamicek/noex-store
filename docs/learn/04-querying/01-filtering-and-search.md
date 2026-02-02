@@ -380,6 +380,10 @@ console.log(total); // 6
 - All queries go through the GenServer architecture, benefiting from index acceleration when available
 - Ordering in `first()` / `last()` depends on `etsType`: sorted keys for `ordered_set`, insertion order for `set`
 
+## API Reference
+
+- [BucketHandle API](../../reference/bucket-handle.md) — `where()`, `findOne()`, `count()` method signatures and return types
+
 ---
 
 Next: [Secondary Indexes](./02-secondary-indexes.md)

@@ -513,6 +513,10 @@ do {
 - Non-numeric values are silently skipped — aggregations never throw for wrong types
 - Aggregation with filters benefits from secondary indexes the same way `where()` does
 
+## API Reference
+
+- [BucketHandle API](../../reference/bucket-handle.md) — `paginate()`, `first()`, `last()`, `sum()`, `avg()`, `min()`, `max()`
+
 ---
 
 Next: [What Are Reactive Queries?](../05-reactive-queries/01-what-are-reactive-queries.md)

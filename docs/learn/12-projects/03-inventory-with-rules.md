@@ -1139,6 +1139,13 @@ The transaction in `transferStock` ensures the source deduction, target addition
 - **`store.settle()`** ensures all reactive callbacks and event handlers have completed before verifying results — essential for deterministic test output
 - The **three-layer architecture** (Data → Logic → Side Effects) keeps the store decoupled from business rules — the store never imports or references the rule engine, making both independently testable
 
+## API Reference
+
+- [Store API](../../reference/store.md) — store setup and lifecycle
+- [BucketHandle API](../../reference/bucket-handle.md) — CRUD operations
+- [Rules Bridge](../../reference/bridge.md) — `bridgeStoreToRules()` integration
+- [Transactions](../../reference/transactions.md) — atomic multi-bucket operations
+
 ---
 
 Previous: [Real-Time Analytics](./02-realtime-analytics.md)

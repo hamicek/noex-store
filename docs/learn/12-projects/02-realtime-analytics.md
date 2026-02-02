@@ -800,6 +800,13 @@ await store.stop();
 - **No transactions** for independent writes (page view + error log) — transactions are only necessary when consistency between buckets matters
 - **Schema-level validation** (`min`, `max`, `pattern`, `enum`) catches bad data at the boundary, before it corrupts aggregations
 
+## API Reference
+
+- [Store API](../../reference/store.md) — store setup and lifecycle
+- [BucketHandle API](../../reference/bucket-handle.md) — CRUD and aggregation methods
+- [Reactive Queries](../../reference/reactive-queries.md) — live dashboard queries
+- [Events](../../reference/events.md) — event-driven analytics pipeline
+
 ---
 
 Next: [Inventory with Rules](./03-inventory-with-rules.md)

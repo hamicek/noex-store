@@ -474,6 +474,11 @@ main();
 - `null` and `undefined` values are not indexed — multiple records can have `null` for a unique field
 - `UniqueConstraintError` is separate from `ValidationError`: validation checks individual field rules, uniqueness checks cross-record integrity
 
+## API Reference
+
+- [Schema and Types](../../reference/schema.md) — `unique` constraint and automatic index creation
+- [Errors](../../reference/errors.md) — `UniqueConstraintError` fields and handling patterns
+
 ---
 
 Next: [Filtering and Search](../04-querying/01-filtering-and-search.md)

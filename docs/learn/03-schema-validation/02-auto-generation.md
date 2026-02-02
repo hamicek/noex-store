@@ -432,6 +432,11 @@ main();
 - Generated fields and primary keys are stripped from update payloads — they can't be overwritten
 - Record metadata (`_version`, `_createdAt`, `_updatedAt`) is managed by the store automatically
 
+## API Reference
+
+- [Schema and Types](../../reference/schema.md) — `generated` field types: `uuid`, `cuid`, `autoincrement`, `timestamp`
+- [Utilities](../../reference/utilities.md) — `generateUuid()`, `generateCuid()`, `generateTimestamp()` functions
+
 ---
 
 Next: [Unique Constraints](./03-unique-constraints.md)

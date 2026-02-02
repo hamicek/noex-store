@@ -427,6 +427,10 @@ The `tasks` bucket was already defined. Calling `defineBucket('tasks', …)` aga
 - `settle()` waits for all pending reactive query evaluations — useful in tests
 - Always call `store.stop()` when done to flush persistence and release resources
 
+## API Reference
+
+- [Store API](../../reference/store.md) — `Store.start()`, `StoreOptions`, `getStats()`, `settle()`, `stop()`
+
 ---
 
 Next: [Buckets and Schemas](./02-buckets-and-schemas.md)

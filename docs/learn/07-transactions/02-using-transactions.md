@@ -680,6 +680,10 @@ console.log(`Laptop stock (unchanged): ${laptopAfter?.stock}`); // Still 3
 - **Empty transactions** (no writes) are a no-op — use regular bucket handles for read-only work
 - `tx.bucket()` is async and cached — calling it twice with the same name returns the same handle
 
+## API Reference
+
+- [Transactions](../../reference/transactions.md) — `TransactionBucketHandle`, write buffer, read-your-own-writes
+
 ---
 
 Next: [Optimistic Locking](./03-optimistic-locking.md)

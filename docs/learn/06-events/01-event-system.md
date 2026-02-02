@@ -535,6 +535,10 @@ await unsubDeleted();
 - Multiple handlers can subscribe to the same pattern independently
 - Always call the unsubscribe function when a listener's lifetime ends to prevent memory leaks
 
+## API Reference
+
+- [Events](../../reference/events.md) — event types, wildcard patterns, `store.on()` signature
+
 ---
 
 Next: [Event Patterns](./02-event-patterns.md)

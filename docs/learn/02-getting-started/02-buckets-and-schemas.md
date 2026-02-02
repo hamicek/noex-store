@@ -590,6 +590,11 @@ await store.defineBucket('comments', {
 - Each bucket runs as an isolated actor under a Supervisor with `one_for_one` restart strategy
 - `BucketHandle` is a stateless proxy — creating handles is free, all calls go through GenServer
 
+## API Reference
+
+- [Store API](../../reference/store.md) — `store.defineBucket()` and `store.bucket()` methods
+- [Schema and Types](../../reference/schema.md) — `BucketDefinition`, `FieldDefinition`, all constraints and generated types
+
 ---
 
 Next: [CRUD Operations](./03-crud-operations.md)

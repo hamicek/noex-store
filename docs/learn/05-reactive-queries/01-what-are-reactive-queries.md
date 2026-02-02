@@ -319,6 +319,10 @@ store.defineQuery('incompleteTasks', async (ctx) => {
 - Use reactive queries for live dashboards and derived data; use events for side effects and mutation-level reactions; use `runQuery()` for one-time reads
 - `store.settle()` waits for all pending re-evaluations — essential for deterministic testing
 
+## API Reference
+
+- [Reactive Queries](../../reference/reactive-queries.md) — `defineQuery()`, `subscribe()`, `runQuery()`, `QueryContext`, dependency tracking
+
 ---
 
 Next: [Defining and Subscribing](./02-defining-and-subscribing.md)
