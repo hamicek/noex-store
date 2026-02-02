@@ -541,6 +541,113 @@ async function main() {
 main();
 ```
 
+## Použití @hamicek/noex-rules
+
+Mock pravidlové enginy výše demonstrují obousměrný vzor s ruční logikou `if/else`. S `@hamicek/noex-rules` se stejné vzory stávají deklarativními — pravidlový engine obstarává pattern matching, vyhodnocování podmínek a vykonávání akcí.
+
+### Kaskádové aktualizace s DSL pravidly
+
+Příklad věrnostních bodů pomocí `@hamicek/noex-rules` s mechanismem `services` pro zápis zpět do store:
+
+```typescript
+import { Store, bridgeStoreToRules } from '@hamicek/noex-store';
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, callService, ref } from '@hamicek/noex-rules/dsl';
+
+const store = await Store.start({ name: 'loyalty' });
+
+await store.defineBucket('orders', {
+  key: 'id',
+  schema: {
+    id:     { type: 'number', generated: 'autoincrement' },
+    userId: { type: 'string', required: true },
+    total:  { type: 'number', required: true, min: 0 },
+    status: { type: 'string', enum: ['pending', 'paid', 'shipped'], default: 'pending' },
+  },
+  indexes: ['userId', 'status'],
+});
+
+await store.defineBucket('loyalty', {
+  key: 'userId',
+  schema: {
+    userId: { type: 'string', required: true },
+    points: { type: 'number', default: 0, min: 0 },
+  },
+});
+
+const loyaltyBucket = store.bucket('loyalty');
+
+// Vytvoření pravidlového enginu s přístupem ke store přes services
+const engine = await RuleEngine.start({
+  name: 'loyalty-rules',
+  services: {
+    loyalty: {
+      award: async (userId: string, total: number) => {
+        const points = Math.floor(total / 10);
+        const existing = await loyaltyBucket.get(userId);
+        if (existing) {
+          await loyaltyBucket.update(userId, {
+            points: (existing.points as number) + points,
+          });
+        } else {
+          await loyaltyBucket.insert({ userId, points });
+        }
+      },
+    },
+  },
+});
+
+// Pravidlo: přidělit věrnostní body při odeslání objednávky
+engine.registerRule(
+  Rule.create('loyalty-on-shipment')
+    .when(onEvent('order.updated'))
+    .if(event('newRecord.status').eq('shipped'))
+    .then(callService('loyalty').method('award').args(
+      ref('event.newRecord.userId'),
+      ref('event.newRecord.total'),
+    ))
+    .build()
+);
+
+// Bridge pouze pro události objednávek
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (e) => e.bucket === 'orders',
+  mapTopic: (_topic, e) => `order.${e.type}`,
+});
+
+// Test průběhu
+const orders = store.bucket('orders');
+const order = await orders.insert({ userId: 'alice', total: 250 });
+await orders.update(order.id, { status: 'paid' });
+await orders.update(order.id, { status: 'shipped' });
+// → loyalty.award('alice', 250) zavoláno → Alice získá 25 bodů
+
+await new Promise((resolve) => setTimeout(resolve, 100));
+
+const loyalty = await loyaltyBucket.get('alice');
+console.log(`Body Alice: ${loyalty?.points}`); // 25
+
+await unbridge();
+await engine.stop();
+await store.stop();
+```
+
+### Jak funguje zpětná smyčka s @hamicek/noex-rules
+
+Vzor je stejný jako u ručních receiverů — pravidlový engine přijímá události přes bridge a zapisuje zpět přes services:
+
+```text
+  Store ──bridge──> RuleEngine
+    ^                    │
+    │                    │ callService('loyalty').method('award')
+    │                    ▼
+    └──── service handler volá store.bucket().update() ────┘
+```
+
+Konfigurace `services` injektuje přístup ke store do pravidlového enginu bez přímé závislosti. Pravidlový engine volá metody služeb deklarativně přes `callService()` a implementace služby drží referenci na store.
+
+Prevence smyček funguje identicky: filtr bridge vylučuje cílové buckety (`loyalty`), takže zápisy z handlerů služeb se nikdy nevrátí do pravidlového enginu.
+
 ## Cvičení
 
 Budujete systém uživatelských účtů. Když je uživatel smazán, všechny jeho objednávky by měly být archivovány (přesunuty do bucketu `archivedOrders`) a jeho relace by měla být vyčištěna.

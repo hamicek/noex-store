@@ -909,6 +909,55 @@ async function main() {
 main();
 ```
 
+## Použití @hamicek/noex-rules
+
+Sekce pravidlového enginu výše používá mock implementaci. S `@hamicek/noex-rules` se pravidlo automatického doobjednání stává deklarativním:
+
+```typescript
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, callService, ref } from '@hamicek/noex-rules/dsl';
+
+const engine = await RuleEngine.start({
+  name: 'inventory-rules',
+  services: {
+    reorder: {
+      create: async (sku: string, reorderLevel: number, currentQty: number) => {
+        await reorderBucket.insert({
+          sku,
+          quantity: reorderLevel * 3,
+          reason: `Stock fell below reorder level of ${reorderLevel} (current: ${currentQty})`,
+        });
+      },
+    },
+  },
+});
+
+engine.registerRule(
+  Rule.create('auto-reorder')
+    .name('Automatické doobjednání při nízkých zásobách')
+    .priority(100)
+    .when(onEvent('products.updated'))
+    .if(event('newRecord.quantity').lt(ref('event.newRecord.reorderLevel')))
+    .and(event('oldRecord.quantity').gte(ref('event.oldRecord.reorderLevel')))
+    .then(callService('reorder').method('create').args(
+      ref('event.key'),
+      ref('event.newRecord.reorderLevel'),
+      ref('event.newRecord.quantity'),
+    ))
+    .build()
+);
+
+// Nahrazení mock pravidlového enginu v bridge
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (event) => event.bucket === 'products',
+  mapTopic: (_topic, event) => `${event.bucket}.${event.type}`,
+});
+```
+
+DSL vyjadřuje stejné ochranné podmínky deklarativně: `.if()` kontroluje, že nové množství je pod úrovní doobjednání, `.and()` zajišťuje, že staré množství bylo na úrovni nebo nad ní — odpovídá ručním podmínkám `newQty >= reorderLevel` a `oldQty < reorderLevel`. Akce `callService` zapisuje do bucketu `reorderRequests` přes injektovanou službu, čímž udržuje pravidlový engine oddělený od vnitřností store.
+
+Zbytek aplikace — auditní stopa, transakce, reaktivní dashboard — zůstává nezměněn. Liší se pouze definice pravidel a nastavení bridge.
+
 ## Cvičení
 
 Vytvořte funkci „přesun zásob" pro systém s více sklady. Máte k dispozici následující store:

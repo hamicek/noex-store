@@ -541,6 +541,113 @@ async function main() {
 main();
 ```
 
+## Using @hamicek/noex-rules
+
+The mock rule engines above demonstrate the bidirectional pattern with manual `if/else` logic. With `@hamicek/noex-rules`, the same patterns become declarative — the rule engine handles pattern matching, condition evaluation, and action execution.
+
+### Cascading Updates with DSL Rules
+
+The loyalty points example using `@hamicek/noex-rules` with the `services` mechanism for writing back to the store:
+
+```typescript
+import { Store, bridgeStoreToRules } from '@hamicek/noex-store';
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, callService, ref } from '@hamicek/noex-rules/dsl';
+
+const store = await Store.start({ name: 'loyalty' });
+
+await store.defineBucket('orders', {
+  key: 'id',
+  schema: {
+    id:     { type: 'number', generated: 'autoincrement' },
+    userId: { type: 'string', required: true },
+    total:  { type: 'number', required: true, min: 0 },
+    status: { type: 'string', enum: ['pending', 'paid', 'shipped'], default: 'pending' },
+  },
+  indexes: ['userId', 'status'],
+});
+
+await store.defineBucket('loyalty', {
+  key: 'userId',
+  schema: {
+    userId: { type: 'string', required: true },
+    points: { type: 'number', default: 0, min: 0 },
+  },
+});
+
+const loyaltyBucket = store.bucket('loyalty');
+
+// Create rule engine with store access via services
+const engine = await RuleEngine.start({
+  name: 'loyalty-rules',
+  services: {
+    loyalty: {
+      award: async (userId: string, total: number) => {
+        const points = Math.floor(total / 10);
+        const existing = await loyaltyBucket.get(userId);
+        if (existing) {
+          await loyaltyBucket.update(userId, {
+            points: (existing.points as number) + points,
+          });
+        } else {
+          await loyaltyBucket.insert({ userId, points });
+        }
+      },
+    },
+  },
+});
+
+// Rule: award loyalty points when order ships
+engine.registerRule(
+  Rule.create('loyalty-on-shipment')
+    .when(onEvent('order.updated'))
+    .if(event('newRecord.status').eq('shipped'))
+    .then(callService('loyalty').method('award').args(
+      ref('event.newRecord.userId'),
+      ref('event.newRecord.total'),
+    ))
+    .build()
+);
+
+// Bridge only order events
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (e) => e.bucket === 'orders',
+  mapTopic: (_topic, e) => `order.${e.type}`,
+});
+
+// Test the flow
+const orders = store.bucket('orders');
+const order = await orders.insert({ userId: 'alice', total: 250 });
+await orders.update(order.id, { status: 'paid' });
+await orders.update(order.id, { status: 'shipped' });
+// → loyalty.award('alice', 250) called → Alice gets 25 points
+
+await new Promise((resolve) => setTimeout(resolve, 100));
+
+const loyalty = await loyaltyBucket.get('alice');
+console.log(`Alice's points: ${loyalty?.points}`); // 25
+
+await unbridge();
+await engine.stop();
+await store.stop();
+```
+
+### How the Feedback Loop Works with @hamicek/noex-rules
+
+The pattern is the same as with manual receivers — the rule engine receives events via the bridge and writes back via services:
+
+```text
+  Store ──bridge──> RuleEngine
+    ^                    │
+    │                    │ callService('loyalty').method('award')
+    │                    ▼
+    └──── service handler calls store.bucket().update() ────┘
+```
+
+The `services` configuration injects store access into the rule engine without creating a direct dependency. The rule engine calls service methods declaratively via `callService()`, and the service implementation holds the store reference.
+
+Loop prevention works identically: the bridge filter excludes target buckets (`loyalty`), so writes from service handlers never re-enter the rule engine.
+
 ## Exercise
 
 You're building a user account system. When a user is deleted, all their orders should be archived (moved to an `archivedOrders` bucket) and their session should be cleared.

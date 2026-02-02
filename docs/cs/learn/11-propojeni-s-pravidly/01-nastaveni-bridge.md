@@ -440,6 +440,75 @@ async function main() {
 main();
 ```
 
+## Použití @hamicek/noex-rules
+
+Příklady výše používají ruční objekt `EventReceiver`. V produkci byste typicky použili `@hamicek/noex-rules` — dedikovaný pravidlový engine, který implementuje `EventReceiver` nativně.
+
+### Instalace
+
+```bash
+npm install @hamicek/noex-rules
+```
+
+### Připojení pravidlového enginu
+
+`RuleEngine.emit()` splňuje rozhraní `EventReceiver` přímo — předejte engine do `bridgeStoreToRules` bez adaptéru:
+
+```typescript
+import { Store, bridgeStoreToRules } from '@hamicek/noex-store';
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, emit, ref } from '@hamicek/noex-rules/dsl';
+
+const store = await Store.start({ name: 'bridge-demo' });
+
+await store.defineBucket('orders', {
+  key: 'id',
+  schema: {
+    id:     { type: 'number', generated: 'autoincrement' },
+    userId: { type: 'string', required: true },
+    total:  { type: 'number', required: true, min: 0 },
+    status: { type: 'string', enum: ['pending', 'paid', 'shipped'], default: 'pending' },
+  },
+  indexes: ['userId', 'status'],
+});
+
+const engine = await RuleEngine.start({ name: 'order-rules' });
+
+// Definice pravidel pomocí DSL
+engine.registerRule(
+  Rule.create('large-order-alert')
+    .when(onEvent('order.inserted'))
+    .if(event('total').gte(500))
+    .then(emit('admin.alert', {
+      orderId: ref('event.key'),
+      message: 'Velká objednávka',
+    }))
+    .build()
+);
+
+// Bridge store → pravidlový engine
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (e) => e.bucket === 'orders',
+  mapTopic: (_topic, e) => `order.${e.type}`,
+});
+
+// Reakce na výstupy pravidlového enginu
+engine.subscribe('admin.alert', (evt) => {
+  console.log('Upozornění:', evt.data);
+});
+
+// Mutace store automaticky spouštějí pravidla
+const orders = store.bucket('orders');
+await orders.insert({ userId: 'alice', total: 800 });
+// Upozornění: { orderId: 1, message: 'Velká objednávka' }
+
+await unbridge();
+await engine.stop();
+await store.stop();
+```
+
+DSL z `@hamicek/noex-rules` nahrazuje ruční logiku `if/else` deklarativními pravidly. `onEvent` spouští na základě tématu, `event('field')` vytváří podmínky, `emit` vysílá výstupní události a `ref` dynamicky vyhodnocuje hodnoty za běhu. Pravidla také podporují priority, časovače a temporální vzory — funkce, které by vyžadovaly významnou ruční implementaci s prostým `EventReceiver`.
+
 ## Cvičení
 
 Budujete notifikační systém. Store má buckety `users` a `tickets`. Pravidlový engine by měl přijímat události pouze tehdy, když:

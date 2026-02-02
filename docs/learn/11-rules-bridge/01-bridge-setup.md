@@ -439,6 +439,75 @@ async function main() {
 main();
 ```
 
+## Using @hamicek/noex-rules
+
+The examples above use a manual `EventReceiver` object. In production, you would typically use `@hamicek/noex-rules` — a dedicated rule engine that implements `EventReceiver` natively.
+
+### Installation
+
+```bash
+npm install @hamicek/noex-rules
+```
+
+### Connecting the Rule Engine
+
+`RuleEngine.emit()` satisfies the `EventReceiver` interface directly — pass the engine to `bridgeStoreToRules` without an adapter:
+
+```typescript
+import { Store, bridgeStoreToRules } from '@hamicek/noex-store';
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, emit, ref } from '@hamicek/noex-rules/dsl';
+
+const store = await Store.start({ name: 'bridge-demo' });
+
+await store.defineBucket('orders', {
+  key: 'id',
+  schema: {
+    id:     { type: 'number', generated: 'autoincrement' },
+    userId: { type: 'string', required: true },
+    total:  { type: 'number', required: true, min: 0 },
+    status: { type: 'string', enum: ['pending', 'paid', 'shipped'], default: 'pending' },
+  },
+  indexes: ['userId', 'status'],
+});
+
+const engine = await RuleEngine.start({ name: 'order-rules' });
+
+// Define rules with the DSL
+engine.registerRule(
+  Rule.create('large-order-alert')
+    .when(onEvent('order.inserted'))
+    .if(event('total').gte(500))
+    .then(emit('admin.alert', {
+      orderId: ref('event.key'),
+      message: 'Large order received',
+    }))
+    .build()
+);
+
+// Bridge store → rule engine
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (e) => e.bucket === 'orders',
+  mapTopic: (_topic, e) => `order.${e.type}`,
+});
+
+// React to rule engine outputs
+engine.subscribe('admin.alert', (evt) => {
+  console.log('Alert:', evt.data);
+});
+
+// Store mutations automatically trigger rules
+const orders = store.bucket('orders');
+await orders.insert({ userId: 'alice', total: 800 });
+// Alert: { orderId: 1, message: 'Large order received' }
+
+await unbridge();
+await engine.stop();
+await store.stop();
+```
+
+The `@hamicek/noex-rules` DSL replaces manual `if/else` logic with declarative rules. `onEvent` triggers on a topic, `event('field')` builds conditions, `emit` fires output events, and `ref` resolves values dynamically at execution time. Rules also support priorities, timers, and temporal patterns — features that would require significant manual implementation with a plain `EventReceiver`.
+
 ## Exercise
 
 You're building a notification system. The store has `users` and `tickets` buckets. A rule engine should receive events only when:

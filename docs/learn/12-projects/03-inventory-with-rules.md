@@ -909,6 +909,55 @@ async function main() {
 main();
 ```
 
+## Using @hamicek/noex-rules
+
+The rule engine section above uses a mock implementation. With `@hamicek/noex-rules`, the auto-reorder rule becomes declarative:
+
+```typescript
+import { RuleEngine } from '@hamicek/noex-rules';
+import { Rule, onEvent, event, callService, ref } from '@hamicek/noex-rules/dsl';
+
+const engine = await RuleEngine.start({
+  name: 'inventory-rules',
+  services: {
+    reorder: {
+      create: async (sku: string, reorderLevel: number, currentQty: number) => {
+        await reorderBucket.insert({
+          sku,
+          quantity: reorderLevel * 3,
+          reason: `Stock fell below reorder level of ${reorderLevel} (current: ${currentQty})`,
+        });
+      },
+    },
+  },
+});
+
+engine.registerRule(
+  Rule.create('auto-reorder')
+    .name('Auto-reorder on low stock')
+    .priority(100)
+    .when(onEvent('products.updated'))
+    .if(event('newRecord.quantity').lt(ref('event.newRecord.reorderLevel')))
+    .and(event('oldRecord.quantity').gte(ref('event.oldRecord.reorderLevel')))
+    .then(callService('reorder').method('create').args(
+      ref('event.key'),
+      ref('event.newRecord.reorderLevel'),
+      ref('event.newRecord.quantity'),
+    ))
+    .build()
+);
+
+// Replace the mock rule engine in the bridge
+const unbridge = await bridgeStoreToRules(store, engine, {
+  filter: (event) => event.bucket === 'products',
+  mapTopic: (_topic, event) => `${event.bucket}.${event.type}`,
+});
+```
+
+The DSL expresses the same guard conditions declaratively: `.if()` checks the new quantity is below the reorder level, `.and()` ensures the old quantity was at or above it — matching the manual `newQty >= reorderLevel` and `oldQty < reorderLevel` guards. The `callService` action writes to the `reorderRequests` bucket through the injected service, keeping the rule engine decoupled from store internals.
+
+The rest of the application — audit trail, transactions, reactive dashboard — remains unchanged. Only the rule definition and bridge setup differ.
+
 ## Exercise
 
 Build a "stock transfer" feature for a multi-warehouse system. Given the following store:
