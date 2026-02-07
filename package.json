@@ -24,7 +24,9 @@
     "bench": "tsx benchmarks/crud.bench.ts && tsx benchmarks/queries.bench.ts && tsx benchmarks/reactive.bench.ts",
     "bench:crud": "tsx benchmarks/crud.bench.ts",
     "bench:queries": "tsx benchmarks/queries.bench.ts",
-    "bench:reactive": "tsx benchmarks/reactive.bench.ts"
+    "bench:reactive": "tsx benchmarks/reactive.bench.ts",
+    "changelog": "changelogen",
+    "release": "changelogen --release"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -38,6 +40,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "changelogen": "^0.6.2",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
