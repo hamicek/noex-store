@@ -559,6 +559,34 @@ insert(data) → GenServer.call → BucketServer.handleCall
 
 ---
 
+## Comparison
+
+How does `noex-store` compare to other reactive stores and client-side databases?
+
+| Feature | noex-store | RxDB | TinyBase | SignalDB | LokiJS | Dexie.js | WatermelonDB |
+|---------|:----------:|:----:|:--------:|:--------:|:------:|:--------:|:------------:|
+| Reactive queries | Convex-style | RxJS Observables | Query engine | Signal-based | DynamicViews | liveQuery | observe() |
+| Schema validation | Built-in DSL | JSON Schema | Schematizers | Validate event | — | — | Column types |
+| Multi-collection transactions | Optimistic locking | — | Single-store | — | Single-coll. | ACID | Writer blocks |
+| Persistence | Adapter-based | Swappable storage | Adapters | Adapters | Adapters | IndexedDB | SQLite |
+| TTL / auto-expiration | First-class | Cleanup only | — | — | Buggy | — | — |
+| Event bus with wildcards | Topic pub/sub | RxJS streams | Granular listeners | Collection events | Collection events | Hooks | Observables |
+| In-memory first | Yes | No | Yes | Yes | Yes | No | No |
+| Supervision tree | OTP one_for_one | — | — | — | — | — | — |
+| Secondary indexes | Unique + non-unique | JSON Schema | Indexes API | Query selectors | Unique + binary | Core feature | isIndexed |
+| Bundle size (gzip) | ~5 kB | 60–150+ kB | 3.5–8 kB | ~5–8 kB | ~20 kB | ~26 kB | ~2 MB |
+| Status | Active | Active (freemium) | Active | Active | Archived | Active | Active |
+
+**Key differentiators:**
+
+- **Supervision tree** — each bucket is an isolated GenServer actor; if one crashes, the supervisor restarts it while siblings continue. No other JS store offers this.
+- **First-class TTL** — declarative per-bucket expiration (`ttl: '30m'`) with automatic background purge and `_expiresAt` metadata.
+- **Convex-style reactive queries** — plain `async` functions become live subscriptions with automatic bucket-level and record-level dependency tracking.
+- **Multi-bucket ACID transactions** — version-based optimistic locking with atomic commit and best-effort rollback.
+- **Wildcard event bus** — subscribe to patterns like `bucket.*.deleted` or `bucket.users.*` across the entire store.
+
+---
+
 ## Benchmarks
 
 Run benchmarks with:

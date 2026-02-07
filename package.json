@@ -29,6 +29,9 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "files": [
+    "dist"
+  ],
   "license": "MIT",
   "dependencies": {
     "@hamicek/noex": "^0.1.0"
