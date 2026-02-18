@@ -1,6 +1,6 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig } from '../types/index.js';
+import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, DeclarativeQueryConfig, QueryInfo } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
@@ -8,6 +8,7 @@ import { QueryManager } from '../reactive/query-manager.js';
 import { TtlManager } from '../lifecycle/ttl-manager.js';
 import { parseTtl } from '../utils/parse-ttl.js';
 import { TransactionContext } from '../transaction/transaction.js';
+import { createQueryFunction } from './declarative-query.js';
 
 // ── Stats type ──────────────────────────────────────────────────
 
@@ -336,6 +337,26 @@ export class Store {
       name,
       fn as (ctx: QueryContext, params?: unknown) => Promise<unknown>,
     );
+  }
+
+  defineDeclarativeQuery(name: string, config: DeclarativeQueryConfig): void {
+    if (!this.#definitions.has(config.bucket)) {
+      throw new BucketNotDefinedError(config.bucket);
+    }
+    const fn = createQueryFunction(config);
+    this.#queryManager.defineDeclarativeQuery(name, fn, config);
+  }
+
+  undefineQuery(name: string): boolean {
+    return this.#queryManager.undefineQuery(name);
+  }
+
+  getQueries(): QueryInfo[] {
+    return this.#queryManager.getQueries();
+  }
+
+  getQueryInfo(name: string): QueryInfo | undefined {
+    return this.#queryManager.getQueryInfo(name);
   }
 
   async subscribe<TResult = unknown>(

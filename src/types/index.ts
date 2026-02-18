@@ -31,3 +31,9 @@ export type {
   QueryContext,
   QueryFn,
 } from './query.js';
+
+export type {
+  DeclarativeQueryConfig,
+  QueryType,
+  QueryInfo,
+} from './declarative-query.js';

@@ -21,6 +21,9 @@ export type {
   PaginateOptions,
   PaginatedResult,
   QueryDependencies,
+  DeclarativeQueryConfig,
+  QueryType,
+  QueryInfo,
   StorePersistenceConfig,
 } from './types/index.js';
 

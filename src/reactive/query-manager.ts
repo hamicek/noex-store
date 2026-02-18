@@ -1,5 +1,6 @@
 import type { BucketHandle } from '../core/bucket-handle.js';
 import type { QueryDependencies } from '../types/query.js';
+import type { DeclarativeQueryConfig, QueryInfo, QueryType } from '../types/declarative-query.js';
 import {
   QueryAlreadyDefinedError,
   QueryNotDefinedError,
@@ -16,6 +17,8 @@ type AnyQueryFn = (ctx: QueryContextImpl, params?: unknown) => Promise<unknown>;
 interface QueryDefinition {
   readonly name: string;
   readonly fn: AnyQueryFn;
+  readonly type: QueryType;
+  readonly config?: DeclarativeQueryConfig;
 }
 
 interface Subscription {
@@ -46,7 +49,64 @@ export class QueryManager {
     if (this.#queries.has(name)) {
       throw new QueryAlreadyDefinedError(name);
     }
-    this.#queries.set(name, { name, fn });
+    this.#queries.set(name, { name, fn, type: 'programmatic' });
+  }
+
+  defineDeclarativeQuery(name: string, fn: AnyQueryFn, config: DeclarativeQueryConfig): void {
+    if (this.#queries.has(name)) {
+      throw new QueryAlreadyDefinedError(name);
+    }
+    this.#queries.set(name, { name, fn, type: 'declarative', config });
+  }
+
+  undefineQuery(name: string): boolean {
+    if (!this.#queries.has(name)) {
+      return false;
+    }
+
+    // Remove all subscriptions for this query
+    for (const [id, sub] of this.#subscriptions) {
+      if (sub.queryName === name) {
+        this.#removeDependencies(id, sub.dependencies);
+        this.#subscriptions.delete(id);
+      }
+    }
+
+    this.#queries.delete(name);
+    return true;
+  }
+
+  getQueries(): QueryInfo[] {
+    const result: QueryInfo[] = [];
+    for (const def of this.#queries.values()) {
+      result.push(this.#buildQueryInfo(def));
+    }
+    return result;
+  }
+
+  getQueryInfo(name: string): QueryInfo | undefined {
+    const def = this.#queries.get(name);
+    if (def === undefined) return undefined;
+    return this.#buildQueryInfo(def);
+  }
+
+  #buildQueryInfo(def: QueryDefinition): QueryInfo {
+    let activeSubscriptions = 0;
+    for (const sub of this.#subscriptions.values()) {
+      if (sub.queryName === def.name) activeSubscriptions++;
+    }
+
+    const info: Record<string, unknown> = {
+      name: def.name,
+      type: def.type,
+      activeSubscriptions,
+    };
+
+    if (def.config !== undefined) {
+      info['config'] = def.config;
+    }
+
+    return info as unknown as QueryInfo;
   }
 
   async subscribe(
