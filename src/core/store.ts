@@ -1,8 +1,8 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketEvent, QueryContext, QueryFn, StorePersistenceConfig } from '../types/index.js';
+import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, SchemaDefinition, StorePersistenceConfig } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
-import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketStats } from './bucket-server.js';
+import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
 import { TtlManager } from '../lifecycle/ttl-manager.js';
@@ -208,11 +208,12 @@ export class Store {
     return result;
   }
 
-  async dropBucket(name: string): Promise<void> {
+  async dropBucket(name: string): Promise<boolean> {
     if (!this.#definitions.has(name)) {
-      throw new BucketNotDefinedError(name);
+      return false;
     }
 
+    this.#queryManager.unsubscribeByBucket(name);
     this.#ttlManager.unregisterBucket(name);
 
     if (this.#persistence) {
@@ -223,6 +224,60 @@ export class Store {
 
     this.#definitions.delete(name);
     this.#refs.delete(name);
+
+    return true;
+  }
+
+  hasBucket(name: string): boolean {
+    return this.#definitions.has(name);
+  }
+
+  getBucketSchema(name: string): BucketDefinition | undefined {
+    return this.#definitions.get(name);
+  }
+
+  async updateBucket(name: string, updates: BucketSchemaUpdate): Promise<void> {
+    const definition = this.#definitions.get(name);
+    if (definition === undefined) {
+      throw new BucketNotDefinedError(name);
+    }
+
+    const newDefinition = this.#mergeDefinitionUpdate(name, definition, updates);
+
+    // Snapshot current data before terminating the old BucketServer
+    const ref = this.#refs.get(name)!;
+    const snapshot = await GenServer.call(ref, { type: 'getSnapshot' }) as BucketSnapshot;
+
+    // Tear down the old BucketServer
+    this.#ttlManager.unregisterBucket(name);
+    if (this.#persistence) {
+      this.#persistence.unregisterBucket(name);
+    }
+    await Supervisor.terminateChild(this.#supervisorRef, name);
+
+    // Start a new BucketServer with the merged definition and existing data
+    const behavior = createBucketBehavior(name, newDefinition, this.#eventBusRef, {
+      records: snapshot.records,
+      autoincrementCounter: snapshot.autoincrementCounter,
+    });
+    const registryName = `${this.#name}:bucket:${name}`;
+
+    const newRef = await Supervisor.startChild(this.#supervisorRef, {
+      id: name,
+      start: () => GenServer.start(behavior, { name: registryName }),
+    }) as BucketRef;
+
+    this.#definitions.set(name, newDefinition);
+    this.#refs.set(name, newRef);
+
+    const isPersistent = this.#persistence !== null && (newDefinition.persistent ?? true);
+    if (isPersistent) {
+      this.#persistence!.registerBucket(name, newRef);
+    }
+
+    if (newDefinition.ttl !== undefined) {
+      this.#ttlManager.registerBucket(name, newRef, parseTtl(newDefinition.ttl));
+    }
   }
 
   /**
@@ -338,6 +393,56 @@ export class Store {
         this.#queryManager.onBucketChange(event.bucket, event.key);
       },
     );
+  }
+
+  #mergeDefinitionUpdate(
+    name: string,
+    definition: BucketDefinition,
+    updates: BucketSchemaUpdate,
+  ): BucketDefinition {
+    const mergedSchema: Record<string, FieldDefinition> = { ...definition.schema };
+
+    if (updates.addFields !== undefined) {
+      for (const [field, def] of Object.entries(updates.addFields)) {
+        if (field in mergedSchema) {
+          throw new Error(
+            `Field "${field}" already exists in bucket "${name}"`,
+          );
+        }
+        mergedSchema[field] = def;
+      }
+    }
+
+    const existingIndexes = [...(definition.indexes ?? [])];
+
+    if (updates.addIndexes !== undefined) {
+      for (const index of updates.addIndexes) {
+        if (!(index in mergedSchema)) {
+          throw new Error(
+            `Index field "${index}" does not exist in schema for bucket "${name}"`,
+          );
+        }
+        if (!existingIndexes.includes(index)) {
+          existingIndexes.push(index);
+        }
+      }
+    }
+
+    let ttl: number | string | undefined;
+    if (updates.ttl === undefined) {
+      ttl = definition.ttl;
+    } else if (updates.ttl === null) {
+      ttl = undefined;
+    } else {
+      ttl = updates.ttl;
+    }
+
+    return {
+      ...definition,
+      schema: mergedSchema as SchemaDefinition,
+      indexes: existingIndexes.length > 0 ? existingIndexes : undefined,
+      ttl,
+    };
   }
 
   #validateDefinition(name: string, definition: BucketDefinition): void {

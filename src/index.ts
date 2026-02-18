@@ -7,6 +7,7 @@ export type {
   FieldDefinition,
   SchemaDefinition,
   BucketDefinition,
+  BucketSchemaUpdate,
   RecordMeta,
   StoreRecord,
   BucketEventType,

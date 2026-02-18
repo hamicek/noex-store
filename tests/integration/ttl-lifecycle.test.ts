@@ -313,10 +313,10 @@ describe('dropBucket', () => {
     expect(() => store.bucket('temp')).toThrow(BucketNotDefinedError);
   });
 
-  it('throws BucketNotDefinedError for non-existent bucket', async () => {
+  it('returns false for non-existent bucket', async () => {
     store = await Store.start({ ttlCheckIntervalMs: 0 });
 
-    await expect(store.dropBucket('nonexistent')).rejects.toThrow(BucketNotDefinedError);
+    expect(await store.dropBucket('nonexistent')).toBe(false);
   });
 
   it('bucket can be re-defined after drop — starts empty', async () => {

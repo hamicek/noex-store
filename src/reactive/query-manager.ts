@@ -131,6 +131,30 @@ export class QueryManager {
     return this.#subscriptions.size;
   }
 
+  unsubscribeByBucket(bucketName: string): void {
+    const affectedSubIds = new Set<string>();
+
+    const bucketSubs = this.#bucketLevelIndex.get(bucketName);
+    if (bucketSubs !== undefined) {
+      for (const id of bucketSubs) affectedSubIds.add(id);
+    }
+
+    const recordSubs = this.#recordLevelIndex.get(bucketName);
+    if (recordSubs !== undefined) {
+      for (const keySubs of recordSubs.values()) {
+        for (const id of keySubs) affectedSubIds.add(id);
+      }
+    }
+
+    for (const id of affectedSubIds) {
+      const sub = this.#subscriptions.get(id);
+      if (sub !== undefined) {
+        this.#removeDependencies(id, sub.dependencies);
+        this.#subscriptions.delete(id);
+      }
+    }
+  }
+
   destroy(): void {
     this.#subscriptions.clear();
     this.#bucketLevelIndex.clear();

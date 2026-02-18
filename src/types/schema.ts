@@ -39,6 +39,15 @@ export interface BucketDefinition {
   readonly maxSize?: number;
 }
 
+export interface BucketSchemaUpdate {
+  /** Add new fields to the schema. Cannot overwrite existing fields. */
+  readonly addFields?: Readonly<Record<string, FieldDefinition>>;
+  /** Add new indexes. Fields must exist in the schema. */
+  readonly addIndexes?: readonly string[];
+  /** Change TTL. `null` removes TTL. */
+  readonly ttl?: number | string | null;
+}
+
 export interface StorePersistenceConfig {
   /** Storage adapter (MemoryAdapter, FileAdapter, SQLiteAdapter from @hamicek/noex). */
   readonly adapter: StorageAdapter;
