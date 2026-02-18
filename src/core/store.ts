@@ -1,6 +1,6 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, SchemaDefinition, StorePersistenceConfig } from '../types/index.js';
+import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
@@ -428,21 +428,29 @@ export class Store {
       }
     }
 
-    let ttl: number | string | undefined;
-    if (updates.ttl === undefined) {
-      ttl = definition.ttl;
-    } else if (updates.ttl === null) {
-      ttl = undefined;
-    } else {
-      ttl = updates.ttl;
+    // Build the result without optional fields that would be undefined.
+    // exactOptionalPropertyTypes forbids assigning undefined to optional props.
+    const { indexes: _oldIdx, ttl: _oldTtl, ...base } = definition;
+
+    const result: Record<string, unknown> = {
+      ...base,
+      schema: mergedSchema,
+    };
+
+    if (existingIndexes.length > 0) {
+      result['indexes'] = existingIndexes;
     }
 
-    return {
-      ...definition,
-      schema: mergedSchema as SchemaDefinition,
-      indexes: existingIndexes.length > 0 ? existingIndexes : undefined,
-      ttl,
-    };
+    // Resolve TTL: undefined = keep original, null = remove, value = set
+    if (updates.ttl === undefined) {
+      if (definition.ttl !== undefined) {
+        result['ttl'] = definition.ttl;
+      }
+    } else if (updates.ttl !== null) {
+      result['ttl'] = updates.ttl;
+    }
+
+    return result as unknown as BucketDefinition;
   }
 
   #validateDefinition(name: string, definition: BucketDefinition): void {
