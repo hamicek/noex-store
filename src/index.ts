@@ -50,6 +50,9 @@ export { ValidationError, SchemaValidator } from './core/schema-validator.js';
 export type { BucketCallMsg, BucketCallReply, BucketRef, BucketSnapshot, BucketInitialData, BucketStats } from './core/bucket-server.js';
 export { createBucketBehavior } from './core/bucket-server.js';
 
+// Core — Filter Matcher
+export { matchesFilter } from './core/filter-matcher.js';
+
 // Core — Index Manager
 export { IndexManager } from './core/index-manager.js';
 
