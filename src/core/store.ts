@@ -1,6 +1,6 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, DeclarativeQueryConfig, QueryInfo } from '../types/index.js';
+import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, StoreRecord, DeclarativeQueryConfig, QueryInfo } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { RefManager } from './ref-manager.js';
@@ -262,22 +262,60 @@ export class Store {
 
     const newDefinition = this.#mergeDefinitionUpdate(name, definition, updates);
 
-    // Snapshot current data before terminating the old BucketServer
     const ref = this.#refs.get(name)!;
     const snapshot = await GenServer.call(ref, { type: 'getSnapshot' }) as BucketSnapshot;
 
-    // Tear down the old BucketServer
+    await this.#rebuildBucketCore(name, newDefinition, {
+      records: snapshot.records,
+      autoincrementCounter: snapshot.autoincrementCounter,
+    });
+  }
+
+  /**
+   * @internal Used by the migration framework.
+   * Replaces a bucket's definition and optionally transforms all existing records.
+   */
+  async rebuildBucket(
+    name: string,
+    newDefinition: BucketDefinition,
+    transformRecords?: (records: ReadonlyArray<readonly [unknown, StoreRecord]>) => Array<[unknown, StoreRecord]>,
+  ): Promise<void> {
+    if (!this.#definitions.has(name)) {
+      throw new BucketNotDefinedError(name);
+    }
+
+    this.#validateDefinition(name, newDefinition);
+
+    const ref = this.#refs.get(name)!;
+    const snapshot = await GenServer.call(ref, { type: 'getSnapshot' }) as BucketSnapshot;
+
+    const records = transformRecords
+      ? transformRecords([...snapshot.records])
+      : snapshot.records;
+
+    this.#refManager.unregisterBucket(name);
+
+    await this.#rebuildBucketCore(name, newDefinition, {
+      records,
+      autoincrementCounter: snapshot.autoincrementCounter,
+    });
+
+    this.#refManager.registerBucket(name, newDefinition);
+    await this.#refManager.indexExistingRecords(name);
+  }
+
+  async #rebuildBucketCore(
+    name: string,
+    newDefinition: BucketDefinition,
+    initialData: BucketInitialData,
+  ): Promise<void> {
     this.#ttlManager.unregisterBucket(name);
     if (this.#persistence) {
       this.#persistence.unregisterBucket(name);
     }
     await Supervisor.terminateChild(this.#supervisorRef, name);
 
-    // Start a new BucketServer with the merged definition and existing data
-    const behavior = createBucketBehavior(name, newDefinition, this.#eventBusRef, {
-      records: snapshot.records,
-      autoincrementCounter: snapshot.autoincrementCounter,
-    });
+    const behavior = createBucketBehavior(name, newDefinition, this.#eventBusRef, initialData);
     const registryName = `${this.#name}:bucket:${name}`;
 
     const newRef = await Supervisor.startChild(this.#supervisorRef, {

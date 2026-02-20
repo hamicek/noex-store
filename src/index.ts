@@ -90,6 +90,15 @@ export type {
   CommitBatchResult,
 } from './core/bucket-server.js';
 
+// Migration
+export type {
+  Migration,
+  MigrationContext,
+  MigrationBucketHandle,
+  MigrationResult,
+} from './types/index.js';
+export { runMigrations } from './migration/index.js';
+
 // Bridge (re-export for convenience; primary import is '@hamicek/noex-store/bridge')
 export { bridgeStoreToRules } from './bridge/rules-bridge.js';
 export type { EventReceiver, BridgeOptions } from './bridge/rules-bridge.js';

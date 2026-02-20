@@ -41,3 +41,10 @@ export type {
   QueryType,
   QueryInfo,
 } from './declarative-query.js';
+
+export type {
+  Migration,
+  MigrationContext,
+  MigrationBucketHandle,
+  MigrationResult,
+} from './migration.js';
