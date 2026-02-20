@@ -489,6 +489,413 @@ describe('SchemaValidator.prepareUpdate', () => {
   });
 });
 
+// ── Nested object validation ─────────────────────────────────────
+
+describe('SchemaValidator nested object validation', () => {
+  it('validates nested object properties', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          street: { type: 'string', required: true },
+          city: { type: 'string', required: true },
+        },
+      },
+    });
+    const record = v.prepareInsert(
+      { address: { street: 'Main St', city: 'Prague' } },
+      1,
+    );
+    expect(record.address).toEqual({ street: 'Main St', city: 'Prague' });
+  });
+
+  it('rejects missing required nested field with dot-notation path', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        required: true,
+        properties: {
+          street: { type: 'string', required: true },
+          city: { type: 'string', required: true },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ address: { street: 'Main St' } }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('address.city');
+      expect(ve.issues[0]!.code).toBe('required');
+    }
+  });
+
+  it('rejects type mismatch in nested field', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          zip: { type: 'number' },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ address: { zip: 'not-a-number' } }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('address.zip');
+      expect(ve.issues[0]!.code).toBe('type');
+    }
+  });
+
+  it('validates constraints on nested fields', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          zip: { type: 'string', pattern: '\\d{3}\\s?\\d{2}' },
+        },
+      },
+    });
+    expect(() =>
+      v.prepareInsert({ address: { zip: 'ABCDE' } }, 1),
+    ).toThrow(ValidationError);
+    const record = v.prepareInsert({ address: { zip: '110 00' } }, 1);
+    expect((record.address as Record<string, unknown>).zip).toBe('110 00');
+  });
+
+  it('skips nested validation when optional object is absent', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          street: { type: 'string', required: true },
+        },
+      },
+    });
+    // address is optional and not provided — no error
+    const record = v.prepareInsert({}, 1);
+    expect(record.address).toBeUndefined();
+  });
+
+  it('skips nested validation when optional object is null', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          street: { type: 'string', required: true },
+        },
+      },
+    });
+    const record = v.prepareInsert({ address: null }, 1);
+    expect(record.address).toBeNull();
+  });
+
+  it('validates deeply nested objects (3 levels)', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      level1: {
+        type: 'object',
+        properties: {
+          level2: {
+            type: 'object',
+            properties: {
+              level3: { type: 'number', min: 0 },
+            },
+          },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ level1: { level2: { level3: -1 } } }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('level1.level2.level3');
+      expect(ve.issues[0]!.code).toBe('min');
+    }
+  });
+
+  it('object without properties is treated as opaque blob', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      meta: { type: 'object' },
+    });
+    // Any object shape is fine when no `properties` is defined
+    const record = v.prepareInsert({ meta: { anything: true, goes: [1, 2] } }, 1);
+    expect(record.meta).toEqual({ anything: true, goes: [1, 2] });
+  });
+
+  it('collects multiple nested issues at once', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        required: true,
+        properties: {
+          street: { type: 'string', required: true },
+          city: { type: 'string', required: true },
+          zip: { type: 'string', pattern: '\\d{5}' },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ address: { zip: 'XYZ' } }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      const fields = ve.issues.map((i) => i.field);
+      expect(fields).toContain('address.street');
+      expect(fields).toContain('address.city');
+      expect(fields).toContain('address.zip');
+    }
+  });
+});
+
+// ── Nested array validation ──────────────────────────────────────
+
+describe('SchemaValidator nested array validation', () => {
+  it('validates each element against items schema', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      tags: {
+        type: 'array',
+        items: { type: 'string', minLength: 1 },
+      },
+    });
+    const record = v.prepareInsert({ tags: ['a', 'bb', 'ccc'] }, 1);
+    expect(record.tags).toEqual(['a', 'bb', 'ccc']);
+  });
+
+  it('rejects array element with wrong type', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+      },
+    });
+    try {
+      v.prepareInsert({ tags: ['ok', 123, 'fine'] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('tags[1]');
+      expect(ve.issues[0]!.code).toBe('type');
+    }
+  });
+
+  it('rejects array element failing constraint', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      tags: {
+        type: 'array',
+        items: { type: 'string', minLength: 2 },
+      },
+    });
+    try {
+      v.prepareInsert({ tags: ['ok', 'x'] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('tags[1]');
+      expect(ve.issues[0]!.code).toBe('minLength');
+    }
+  });
+
+  it('skips null/undefined elements in array', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+      },
+    });
+    const record = v.prepareInsert({ tags: ['a', null, 'b'] }, 1);
+    expect(record.tags).toEqual(['a', null, 'b']);
+  });
+
+  it('validates array of objects with nested properties', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      contacts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', required: true },
+            email: { type: 'string', format: 'email' },
+          },
+        },
+      },
+    });
+    const record = v.prepareInsert(
+      { contacts: [{ name: 'Alice', email: 'alice@example.com' }] },
+      1,
+    );
+    expect(record.contacts).toEqual([
+      { name: 'Alice', email: 'alice@example.com' },
+    ]);
+  });
+
+  it('reports correct path for nested object in array', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      contacts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', required: true },
+          },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ contacts: [{ name: 'Alice' }, {}] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('contacts[1].name');
+      expect(ve.issues[0]!.code).toBe('required');
+    }
+  });
+
+  it('validates array of arrays (nested items)', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      matrix: {
+        type: 'array',
+        items: {
+          type: 'array',
+          items: { type: 'number', min: 0 },
+        },
+      },
+    });
+    const record = v.prepareInsert({ matrix: [[1, 2], [3, 4]] }, 1);
+    expect(record.matrix).toEqual([[1, 2], [3, 4]]);
+  });
+
+  it('reports correct path for nested array of arrays', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      matrix: {
+        type: 'array',
+        items: {
+          type: 'array',
+          items: { type: 'number', min: 0 },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ matrix: [[1, 2], [3, -1]] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('matrix[1][1]');
+      expect(ve.issues[0]!.code).toBe('min');
+    }
+  });
+
+  it('array without items is treated as opaque', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      data: { type: 'array' },
+    });
+    const record = v.prepareInsert({ data: [1, 'two', true, null] }, 1);
+    expect(record.data).toEqual([1, 'two', true, null]);
+  });
+
+  it('skips array validation when optional array is absent', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      tags: {
+        type: 'array',
+        items: { type: 'string', minLength: 5 },
+      },
+    });
+    const record = v.prepareInsert({}, 1);
+    expect(record.tags).toBeUndefined();
+  });
+
+  it('collects multiple element errors', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      scores: {
+        type: 'array',
+        items: { type: 'number', min: 0, max: 100 },
+      },
+    });
+    try {
+      v.prepareInsert({ scores: [-5, 50, 200] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(2);
+      expect(ve.issues[0]!.field).toBe('scores[0]');
+      expect(ve.issues[1]!.field).toBe('scores[2]');
+    }
+  });
+});
+
+// ── Nested validation in prepareUpdate ───────────────────────────
+
+describe('SchemaValidator nested validation in prepareUpdate', () => {
+  const schema: SchemaDefinition = {
+    id: { type: 'string', generated: 'uuid' },
+    address: {
+      type: 'object',
+      properties: {
+        street: { type: 'string', required: true },
+        city: { type: 'string', required: true },
+      },
+    },
+    tags: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+    },
+  };
+
+  function makeExisting(overrides: Record<string, unknown> = {}) {
+    const now = Date.now();
+    return {
+      id: 'existing-uuid',
+      address: { street: 'Main St', city: 'Prague' },
+      tags: ['tag1'],
+      _version: 1,
+      _createdAt: now - 10_000,
+      _updatedAt: now - 10_000,
+      ...overrides,
+    } as import('../../src/types/index.js').StoreRecord;
+  }
+
+  it('accepts valid nested update', () => {
+    const v = makeValidator(schema);
+    const updated = v.prepareUpdate(makeExisting(), {
+      address: { street: 'New St', city: 'Brno' },
+    });
+    expect(updated.address).toEqual({ street: 'New St', city: 'Brno' });
+  });
+
+  it('rejects invalid nested update', () => {
+    const v = makeValidator(schema);
+    expect(() =>
+      v.prepareUpdate(makeExisting(), {
+        address: { street: 'New St' },
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  it('rejects invalid array element in update', () => {
+    const v = makeValidator(schema);
+    expect(() =>
+      v.prepareUpdate(makeExisting(), {
+        tags: ['ok', ''],
+      }),
+    ).toThrow(ValidationError);
+  });
+});
+
 // ── ValidationError ──────────────────────────────────────────────
 
 describe('ValidationError', () => {

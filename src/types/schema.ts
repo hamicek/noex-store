@@ -25,6 +25,10 @@ export interface FieldDefinition {
   readonly ref?: string;
   readonly onDelete?: OnDeleteAction;
   readonly unique?: boolean;
+  /** Nested schema for `type: 'object'` — validates properties of the object. */
+  readonly properties?: SchemaDefinition;
+  /** Item schema for `type: 'array'` — validates each element of the array. */
+  readonly items?: FieldDefinition;
 }
 
 export type SchemaDefinition = Readonly<Record<string, FieldDefinition>>;

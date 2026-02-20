@@ -36,6 +36,8 @@ export class ValidationError extends Error {
   }
 }
 
+const MAX_NESTING_DEPTH = 10;
+
 // ── Schema Validator ───────────────────────────────────────────────
 
 export class SchemaValidator {
@@ -148,12 +150,28 @@ export class SchemaValidator {
 
   #validate(record: Record<string, unknown>): void {
     const issues: ValidationIssue[] = [];
+    this.#validateSchema(this.#schema, record, '', issues, 0);
 
-    for (const [field, def] of Object.entries(this.#schema)) {
+    if (issues.length > 0) {
+      throw new ValidationError(this.#bucketName, issues);
+    }
+  }
+
+  #validateSchema(
+    schema: SchemaDefinition,
+    record: Record<string, unknown>,
+    prefix: string,
+    issues: ValidationIssue[],
+    depth: number,
+  ): void {
+    if (depth > MAX_NESTING_DEPTH) return;
+
+    for (const [field, def] of Object.entries(schema)) {
+      const path = prefix ? `${prefix}.${field}` : field;
       const value = record[field];
 
       if (def.required === true && (value === undefined || value === null)) {
-        issues.push({ field, message: 'Field is required', code: 'required' });
+        issues.push({ field: path, message: 'Field is required', code: 'required' });
         continue;
       }
 
@@ -163,18 +181,72 @@ export class SchemaValidator {
 
       if (!this.#matchesType(value, def.type)) {
         issues.push({
-          field,
+          field: path,
           message: `Expected type "${def.type}", got ${describeType(value)}`,
           code: 'type',
         });
         continue;
       }
 
-      this.#validateConstraints(field, value, def, issues);
-    }
+      this.#validateConstraints(path, value, def, issues);
 
-    if (issues.length > 0) {
-      throw new ValidationError(this.#bucketName, issues);
+      if (def.type === 'object' && def.properties != null) {
+        this.#validateSchema(
+          def.properties,
+          value as Record<string, unknown>,
+          path,
+          issues,
+          depth + 1,
+        );
+      }
+
+      if (def.type === 'array' && def.items != null) {
+        this.#validateArrayItems(path, value as unknown[], def.items, issues, depth + 1);
+      }
+    }
+  }
+
+  #validateArrayItems(
+    path: string,
+    arr: unknown[],
+    itemDef: FieldDefinition,
+    issues: ValidationIssue[],
+    depth: number,
+  ): void {
+    if (depth > MAX_NESTING_DEPTH) return;
+
+    for (let i = 0; i < arr.length; i++) {
+      const itemPath = `${path}[${i}]`;
+      const value = arr[i];
+
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      if (!this.#matchesType(value, itemDef.type)) {
+        issues.push({
+          field: itemPath,
+          message: `Expected type "${itemDef.type}", got ${describeType(value)}`,
+          code: 'type',
+        });
+        continue;
+      }
+
+      this.#validateConstraints(itemPath, value, itemDef, issues);
+
+      if (itemDef.type === 'object' && itemDef.properties != null) {
+        this.#validateSchema(
+          itemDef.properties,
+          value as Record<string, unknown>,
+          itemPath,
+          issues,
+          depth + 1,
+        );
+      }
+
+      if (itemDef.type === 'array' && itemDef.items != null) {
+        this.#validateArrayItems(itemPath, value as unknown[], itemDef.items, issues, depth + 1);
+      }
     }
   }
 
