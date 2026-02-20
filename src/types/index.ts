@@ -34,6 +34,7 @@ export type {
   QueryBucket,
   QueryContext,
   QueryFn,
+  ReadFilter,
 } from './query.js';
 
 export type {

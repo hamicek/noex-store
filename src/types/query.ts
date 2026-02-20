@@ -103,3 +103,13 @@ export type QueryFn<TParams = void, TResult = unknown> =
   TParams extends void
     ? (ctx: QueryContext) => Promise<TResult>
     : (ctx: QueryContext, params: TParams) => Promise<TResult>;
+
+/**
+ * Function that returns a WhereFilter for a given bucket name,
+ * or `null` if no filter should be applied.
+ *
+ * Used to inject row-level security or other access control
+ * into query execution — the filter is transparently applied
+ * to all bucket reads within the query.
+ */
+export type ReadFilter = (bucketName: string) => WhereFilter | null;

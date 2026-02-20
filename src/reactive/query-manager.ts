@@ -1,5 +1,5 @@
 import type { BucketHandle } from '../core/bucket-handle.js';
-import type { QueryDependencies } from '../types/query.js';
+import type { QueryDependencies, ReadFilter } from '../types/query.js';
 import type { DeclarativeQueryConfig, QueryInfo, QueryType } from '../types/declarative-query.js';
 import {
   QueryAlreadyDefinedError,
@@ -26,6 +26,7 @@ interface Subscription {
   readonly queryName: string;
   readonly params: unknown;
   readonly callback: (result: unknown) => void;
+  readonly readFilter: ReadFilter | undefined;
   lastResult: unknown;
   dependencies: QueryDependencies;
 }
@@ -113,11 +114,12 @@ export class QueryManager {
     queryName: string,
     paramsOrCallback: unknown,
     maybeCallback?: unknown,
+    readFilter?: ReadFilter,
   ): Promise<() => void> {
     const { params, callback } = this.#resolveSubscribeArgs(paramsOrCallback, maybeCallback);
     const definition = this.#getDefinition(queryName);
 
-    const ctx = new QueryContextImpl(this.#bucketAccessor);
+    const ctx = new QueryContextImpl(this.#bucketAccessor, readFilter);
     const initialResult = await this.#executeQuery(definition.fn, ctx, params);
     const dependencies = ctx.getDependencies();
 
@@ -127,6 +129,7 @@ export class QueryManager {
       queryName,
       params,
       callback,
+      readFilter,
       lastResult: initialResult,
       dependencies,
     };
@@ -143,9 +146,9 @@ export class QueryManager {
     };
   }
 
-  async runQuery(queryName: string, params?: unknown): Promise<unknown> {
+  async runQuery(queryName: string, params?: unknown, readFilter?: ReadFilter): Promise<unknown> {
     const definition = this.#getDefinition(queryName);
-    const ctx = new QueryContextImpl(this.#bucketAccessor);
+    const ctx = new QueryContextImpl(this.#bucketAccessor, readFilter);
     return this.#executeQuery(definition.fn, ctx, params);
   }
 
@@ -236,7 +239,7 @@ export class QueryManager {
     let newDependencies: QueryDependencies;
 
     try {
-      const ctx = new QueryContextImpl(this.#bucketAccessor);
+      const ctx = new QueryContextImpl(this.#bucketAccessor, sub.readFilter);
       newResult = await this.#executeQuery(definition.fn, ctx, sub.params);
       newDependencies = ctx.getDependencies();
     } catch {

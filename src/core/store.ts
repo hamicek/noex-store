@@ -1,6 +1,6 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, StoreRecord, DeclarativeQueryConfig, QueryInfo } from '../types/index.js';
+import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, StoreRecord, DeclarativeQueryConfig, QueryInfo, ReadFilter } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { RefManager } from './ref-manager.js';
@@ -423,19 +423,36 @@ export class Store {
     params: TParams,
     callback: (result: TResult) => void,
   ): Promise<() => void>;
+  async subscribe<TParams, TResult = unknown>(
+    queryName: string,
+    params: TParams,
+    callback: (result: TResult) => void,
+    readFilter: ReadFilter,
+  ): Promise<() => void>;
   async subscribe(
     queryName: string,
     paramsOrCallback: unknown,
     maybeCallback?: unknown,
+    readFilter?: ReadFilter,
   ): Promise<() => void> {
-    return this.#queryManager.subscribe(queryName, paramsOrCallback, maybeCallback);
+    return this.#queryManager.subscribe(queryName, paramsOrCallback, maybeCallback, readFilter);
   }
 
   async runQuery<TResult = unknown>(
     queryName: string,
     params?: unknown,
+  ): Promise<TResult>;
+  async runQuery<TResult = unknown>(
+    queryName: string,
+    params: unknown | undefined,
+    readFilter: ReadFilter,
+  ): Promise<TResult>;
+  async runQuery<TResult = unknown>(
+    queryName: string,
+    params?: unknown,
+    readFilter?: ReadFilter,
   ): Promise<TResult> {
-    return this.#queryManager.runQuery(queryName, params) as Promise<TResult>;
+    return this.#queryManager.runQuery(queryName, params, readFilter) as Promise<TResult>;
   }
 
   async settle(): Promise<void> {

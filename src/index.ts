@@ -28,6 +28,7 @@ export type {
   DeclarativeQueryConfig,
   QueryType,
   QueryInfo,
+  ReadFilter,
   StorePersistenceConfig,
 } from './types/index.js';
 
