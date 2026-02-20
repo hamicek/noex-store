@@ -499,3 +499,100 @@ describe('IndexManager — stat getters', () => {
     expect(mgr.hasUniqueConstraints).toBe(false);
   });
 });
+
+// ── validateBatchInsert ─────────────────────────────────────────
+
+describe('IndexManager — validateBatchInsert', () => {
+  let mgr: IndexManager;
+
+  beforeEach(() => {
+    mgr = makeManager();
+  });
+
+  it('passes for batch with no unique conflicts', () => {
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'a@x.cz', name: 'A' } },
+      { key: 'k2', record: { id: 'k2', email: 'b@x.cz', name: 'B' } },
+    ];
+    expect(() => mgr.validateBatchInsert(entries)).not.toThrow();
+  });
+
+  it('throws on conflict with existing index entry', () => {
+    mgr.addRecord('k1', { id: 'k1', email: 'a@x.cz', name: 'A' });
+
+    const entries = [
+      { key: 'k2', record: { id: 'k2', email: 'b@x.cz', name: 'B' } },
+      { key: 'k3', record: { id: 'k3', email: 'a@x.cz', name: 'C' } }, // collides with k1
+    ];
+    expect(() => mgr.validateBatchInsert(entries)).toThrow(UniqueConstraintError);
+  });
+
+  it('throws on cross-batch collision (duplicate within batch)', () => {
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'same@x.cz', name: 'A' } },
+      { key: 'k2', record: { id: 'k2', email: 'same@x.cz', name: 'B' } },
+    ];
+    expect(() => mgr.validateBatchInsert(entries)).toThrow(UniqueConstraintError);
+  });
+
+  it('error contains correct bucket, field, and value', () => {
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'dup@x.cz', name: 'A' } },
+      { key: 'k2', record: { id: 'k2', email: 'dup@x.cz', name: 'B' } },
+    ];
+    try {
+      mgr.validateBatchInsert(entries);
+      expect.unreachable('should throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UniqueConstraintError);
+      const e = err as UniqueConstraintError;
+      expect(e.bucket).toBe('test');
+      expect(e.field).toBe('email');
+      expect(e.value).toBe('dup@x.cz');
+    }
+  });
+
+  it('skips null and undefined values — no collision', () => {
+    mgr.addRecord('k1', { id: 'k1', email: null, name: 'A' });
+
+    const entries = [
+      { key: 'k2', record: { id: 'k2', email: null, name: 'B' } },
+      { key: 'k3', record: { id: 'k3', name: 'C' } }, // email undefined
+    ];
+    expect(() => mgr.validateBatchInsert(entries)).not.toThrow();
+  });
+
+  it('checks all unique fields (email + code)', () => {
+    const mgr2 = makeManager(['email', 'tier', 'code']);
+
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'a@x.cz', code: 'AAA', tier: 'vip' } },
+      { key: 'k2', record: { id: 'k2', email: 'b@x.cz', code: 'AAA', tier: 'basic' } }, // code collision
+    ];
+    expect(() => mgr2.validateBatchInsert(entries)).toThrow(UniqueConstraintError);
+  });
+
+  it('does not modify indexes after call', () => {
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'a@x.cz', name: 'A' } },
+      { key: 'k2', record: { id: 'k2', email: 'b@x.cz', name: 'B' } },
+    ];
+    mgr.validateBatchInsert(entries);
+
+    expect(mgr.lookup('email', 'a@x.cz')).toEqual([]);
+    expect(mgr.lookup('email', 'b@x.cz')).toEqual([]);
+  });
+
+  it('passes for empty batch', () => {
+    expect(() => mgr.validateBatchInsert([])).not.toThrow();
+  });
+
+  it('ignores non-unique indexes', () => {
+    // Two records with the same tier value — fine because tier is non-unique
+    const entries = [
+      { key: 'k1', record: { id: 'k1', email: 'a@x.cz', name: 'A', tier: 'vip' } },
+      { key: 'k2', record: { id: 'k2', email: 'b@x.cz', name: 'B', tier: 'vip' } },
+    ];
+    expect(() => mgr.validateBatchInsert(entries)).not.toThrow();
+  });
+});

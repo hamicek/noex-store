@@ -216,6 +216,34 @@ export class IndexManager {
   }
 
   /**
+   * Validate unique constraints for a batch of new records.
+   * Checks each record against existing index entries AND against
+   * other records in the batch (cross-batch collision detection).
+   * Does not modify indexes.
+   * Throws UniqueConstraintError on first violation.
+   */
+  validateBatchInsert(entries: ReadonlyArray<{ key: unknown; record: Record<string, unknown> }>): void {
+    for (const [field, index] of this.#indexes) {
+      if (index.kind !== 'unique') continue;
+      const seen = new Set<unknown>();
+
+      for (const entry of entries) {
+        const value = entry.record[field];
+        if (value == null) continue;
+
+        if (index.valueToKey.has(value)) {
+          throw new UniqueConstraintError(this.#bucketName, field, value);
+        }
+
+        if (seen.has(value)) {
+          throw new UniqueConstraintError(this.#bucketName, field, value);
+        }
+        seen.add(value);
+      }
+    }
+  }
+
+  /**
    * Look up primary keys by indexed field value.
    *
    * Returns an array of primary keys, or `undefined` if the field is not indexed
