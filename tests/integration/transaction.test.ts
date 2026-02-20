@@ -449,3 +449,341 @@ describe('transaction: edge cases', () => {
     ).rejects.toThrow('Bucket "nonexistent" is not defined');
   });
 });
+
+// ── Bulk operations in transactions ──────────────────────────────
+
+describe('transaction: insertMany', () => {
+  it('commits multiple inserts atomically', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const records = await b.insertMany([
+        { name: 'Alice', email: 'alice@x.cz' },
+        { name: 'Bob', email: 'bob@x.cz' },
+        { name: 'Charlie', email: 'charlie@x.cz' },
+      ]);
+      expect(records).toHaveLength(3);
+      expect(records[0]!.name).toBe('Alice');
+      expect(records[1]!.name).toBe('Bob');
+      expect(records[2]!.name).toBe('Charlie');
+    });
+
+    const all = await s.bucket('customers').all();
+    expect(all).toHaveLength(3);
+  });
+
+  it('supports read-your-own-writes after insertMany', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      await b.insertMany([
+        { name: 'Alice', tier: 'vip', email: 'alice@x.cz' },
+        { name: 'Bob', tier: 'basic', email: 'bob@x.cz' },
+      ]);
+
+      const vips = await b.where({ tier: 'vip' });
+      expect(vips).toHaveLength(1);
+      expect(vips[0]!.name).toBe('Alice');
+
+      expect(await b.count()).toBe(2);
+    });
+  });
+
+  it('continues autoincrement correctly', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const orders = await tx.bucket('orders');
+      const records = await orders.insertMany([
+        { customerId: 'c1', amount: 100, items: ['a'] },
+        { customerId: 'c2', amount: 200, items: ['b'] },
+        { customerId: 'c3', amount: 300, items: ['c'] },
+      ]);
+
+      expect(records[0]!.id).toBe(1);
+      expect(records[1]!.id).toBe(2);
+      expect(records[2]!.id).toBe(3);
+    });
+
+    // Counter persists after commit
+    const next = await s.bucket('orders').insert({ customerId: 'c4', amount: 400, items: ['d'] });
+    expect(next.id).toBe(4);
+  });
+
+  it('rolls back all inserts on user error', async () => {
+    const s = await createStore();
+
+    await expect(
+      s.transaction(async (tx) => {
+        const b = await tx.bucket('customers');
+        await b.insertMany([
+          { name: 'Alice', email: 'alice@x.cz' },
+          { name: 'Bob', email: 'bob@x.cz' },
+        ]);
+        throw new Error('Simulated failure');
+      }),
+    ).rejects.toThrow('Simulated failure');
+
+    expect(await s.bucket('customers').count()).toBe(0);
+  });
+});
+
+describe('transaction: updateMany', () => {
+  it('updates matching records with overlay', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Alice', tier: 'basic', score: 10, email: 'alice@x.cz' });
+    await s.bucket('customers').insert({ name: 'Bob', tier: 'basic', score: 20, email: 'bob@x.cz' });
+    await s.bucket('customers').insert({ name: 'Charlie', tier: 'vip', score: 30, email: 'charlie@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const count = await b.updateMany({ tier: 'basic' }, { score: 99 });
+      expect(count).toBe(2);
+
+      // Read-your-own-writes: updated records visible within tx
+      const basics = await b.where({ tier: 'basic' });
+      for (const r of basics) {
+        expect(r.score).toBe(99);
+      }
+    });
+
+    const all = await s.bucket('customers').all();
+    const updated = all.filter(r => r.score === 99);
+    expect(updated).toHaveLength(2);
+
+    // Untouched record
+    const charlie = all.find(r => r.name === 'Charlie')!;
+    expect(charlie.score).toBe(30);
+  });
+
+  it('returns 0 when no records match', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Alice', email: 'alice@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const count = await b.updateMany({ name: 'NonExistent' }, { score: 99 });
+      expect(count).toBe(0);
+    });
+  });
+
+  it('rolls back on user error', async () => {
+    const s = await createStore();
+    const alice = await s.bucket('customers').insert({ name: 'Alice', score: 0, email: 'alice@x.cz' });
+
+    await expect(
+      s.transaction(async (tx) => {
+        const b = await tx.bucket('customers');
+        await b.updateMany({}, { score: 999 });
+        throw new Error('Boom');
+      }),
+    ).rejects.toThrow('Boom');
+
+    const found = await s.bucket('customers').get(alice.id);
+    expect(found!.score).toBe(0);
+  });
+});
+
+describe('transaction: deleteMany', () => {
+  it('deletes matching records with overlay', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Alice', tier: 'basic', email: 'alice@x.cz' });
+    await s.bucket('customers').insert({ name: 'Bob', tier: 'vip', email: 'bob@x.cz' });
+    await s.bucket('customers').insert({ name: 'Charlie', tier: 'basic', email: 'charlie@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const count = await b.deleteMany({ tier: 'basic' });
+      expect(count).toBe(2);
+
+      // Read-your-own-writes: deleted records not visible
+      const all = await b.all();
+      expect(all).toHaveLength(1);
+      expect(all[0]!.name).toBe('Bob');
+    });
+
+    const all = await s.bucket('customers').all();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.name).toBe('Bob');
+  });
+
+  it('returns 0 when no records match', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Alice', email: 'alice@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const count = await b.deleteMany({ name: 'NonExistent' });
+      expect(count).toBe(0);
+    });
+
+    expect(await s.bucket('customers').count()).toBe(1);
+  });
+
+  it('rolls back on user error', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Alice', email: 'alice@x.cz' });
+    await s.bucket('customers').insert({ name: 'Bob', email: 'bob@x.cz' });
+
+    await expect(
+      s.transaction(async (tx) => {
+        const b = await tx.bucket('customers');
+        await b.deleteMany({});
+        throw new Error('Boom');
+      }),
+    ).rejects.toThrow('Boom');
+
+    expect(await s.bucket('customers').count()).toBe(2);
+  });
+});
+
+describe('transaction: upsert', () => {
+  it('inserts when key does not exist', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const record = await b.upsert({ name: 'Alice', email: 'alice@x.cz' });
+      expect(record._version).toBe(1);
+      expect(record.name).toBe('Alice');
+    });
+
+    const all = await s.bucket('customers').all();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.name).toBe('Alice');
+  });
+
+  it('updates when key already exists in real store', async () => {
+    const s = await createStore();
+    const existing = await s.bucket('customers').insert({ name: 'Alice', score: 10, email: 'alice@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const record = await b.upsert({ id: existing.id, name: 'Alice Updated', score: 99 });
+      expect(record._version).toBe(2);
+      expect(record.name).toBe('Alice Updated');
+      expect(record.score).toBe(99);
+    });
+
+    const found = await s.bucket('customers').get(existing.id);
+    expect(found!.name).toBe('Alice Updated');
+    expect(found!.score).toBe(99);
+  });
+
+  it('updates a record previously inserted in same transaction', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+      const inserted = await b.insert({ name: 'Alice', score: 10, email: 'alice@x.cz' });
+      const upserted = await b.upsert({ id: inserted.id, name: 'Alice Updated', score: 99 });
+
+      expect(upserted._version).toBe(2);
+      expect(upserted.name).toBe('Alice Updated');
+    });
+
+    const all = await s.bucket('customers').all();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.name).toBe('Alice Updated');
+  });
+
+  it('rolls back on user error', async () => {
+    const s = await createStore();
+
+    await expect(
+      s.transaction(async (tx) => {
+        const b = await tx.bucket('customers');
+        await b.upsert({ name: 'Alice', email: 'alice@x.cz' });
+        throw new Error('Boom');
+      }),
+    ).rejects.toThrow('Boom');
+
+    expect(await s.bucket('customers').count()).toBe(0);
+  });
+});
+
+describe('transaction: bulk operations multi-bucket', () => {
+  it('commits bulk operations across multiple buckets atomically', async () => {
+    const s = await createStore();
+
+    await s.transaction(async (tx) => {
+      const customers = await tx.bucket('customers');
+      const orders = await tx.bucket('orders');
+
+      const [alice, bob] = await customers.insertMany([
+        { name: 'Alice', email: 'alice@x.cz' },
+        { name: 'Bob', email: 'bob@x.cz' },
+      ]);
+
+      await orders.insertMany([
+        { customerId: alice!.id as string, amount: 100, items: ['x'] },
+        { customerId: bob!.id as string, amount: 200, items: ['y'] },
+        { customerId: alice!.id as string, amount: 300, items: ['z'] },
+      ]);
+    });
+
+    expect(await s.bucket('customers').count()).toBe(2);
+    expect(await s.bucket('orders').count()).toBe(3);
+  });
+
+  it('rolls back all buckets on error', async () => {
+    const s = await createStore();
+    await s.bucket('customers').insert({ name: 'Existing', email: 'existing@x.cz' });
+
+    await expect(
+      s.transaction(async (tx) => {
+        const customers = await tx.bucket('customers');
+        const orders = await tx.bucket('orders');
+
+        await customers.insertMany([
+          { name: 'Alice', email: 'alice@x.cz' },
+          { name: 'Bob', email: 'bob@x.cz' },
+        ]);
+
+        await orders.insertMany([
+          { customerId: 'c1', amount: 100, items: ['a'] },
+        ]);
+
+        throw new Error('Multi-bucket failure');
+      }),
+    ).rejects.toThrow('Multi-bucket failure');
+
+    expect(await s.bucket('customers').count()).toBe(1); // only the pre-existing one
+    expect(await s.bucket('orders').count()).toBe(0);
+  });
+
+  it('combines insertMany, updateMany, deleteMany in single transaction', async () => {
+    const s = await createStore();
+
+    // Seed data
+    await s.bucket('customers').insert({ name: 'Alice', tier: 'basic', score: 10, email: 'alice@x.cz' });
+    await s.bucket('customers').insert({ name: 'Bob', tier: 'basic', score: 20, email: 'bob@x.cz' });
+    await s.bucket('customers').insert({ name: 'Charlie', tier: 'vip', score: 30, email: 'charlie@x.cz' });
+
+    await s.transaction(async (tx) => {
+      const b = await tx.bucket('customers');
+
+      // Insert new records
+      await b.insertMany([
+        { name: 'Dave', tier: 'vip', email: 'dave@x.cz' },
+        { name: 'Eve', tier: 'basic', email: 'eve@x.cz' },
+      ]);
+
+      // Update all basic tier to vip
+      const updateCount = await b.updateMany({ tier: 'basic' }, { tier: 'vip' });
+      expect(updateCount).toBe(3); // Alice, Bob, Eve
+
+      // Delete Charlie
+      const deleteCount = await b.deleteMany({ name: 'Charlie' });
+      expect(deleteCount).toBe(1);
+    });
+
+    const all = await s.bucket('customers').all();
+    expect(all).toHaveLength(4); // Alice, Bob, Dave, Eve (Charlie deleted)
+    for (const r of all) {
+      expect(r.tier).toBe('vip');
+    }
+  });
+});

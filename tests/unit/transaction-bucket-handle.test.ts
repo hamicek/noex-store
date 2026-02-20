@@ -520,6 +520,244 @@ describe('TransactionBucketHandle count()', () => {
   });
 });
 
+// ── insertMany() ────────────────────────────────────────────────
+
+describe('TransactionBucketHandle insertMany()', () => {
+  it('inserts multiple records and returns them all', async () => {
+    const { handle } = createHandle();
+
+    const records = await handle.insertMany([
+      { name: 'Alice', tier: 'vip' },
+      { name: 'Bob', tier: 'basic' },
+      { name: 'Charlie', tier: 'vip' },
+    ]);
+
+    expect(records).toHaveLength(3);
+    expect(records[0]!.name).toBe('Alice');
+    expect(records[1]!.name).toBe('Bob');
+    expect(records[2]!.name).toBe('Charlie');
+    for (const r of records) {
+      expect(r.id).toMatch(UUID_RE);
+      expect(r._version).toBe(1);
+    }
+  });
+
+  it('buffers all inserts locally', async () => {
+    const { handle, buffer } = createHandle();
+
+    const records = await handle.insertMany([
+      { name: 'Alice' },
+      { name: 'Bob' },
+    ]);
+
+    expect(buffer.inserts.size).toBe(2);
+    for (const r of records) {
+      expect(buffer.inserts.has(r.id)).toBe(true);
+    }
+  });
+
+  it('returns empty array for empty input', async () => {
+    const { handle, buffer } = createHandle();
+
+    const records = await handle.insertMany([]);
+    expect(records).toEqual([]);
+    expect(buffer.inserts.size).toBe(0);
+  });
+
+  it('increments autoincrement counter for each record', async () => {
+    const aiBehavior = createBucketBehavior('items', autoincrementDef, eventBusRef);
+    const aiRef = await GenServer.start(aiBehavior) as BucketRef;
+    try {
+      const buffer = new BucketWriteBuffer();
+      const h = new TransactionBucketHandle('items', aiRef, buffer, autoincrementDef, 0);
+
+      const records = await h.insertMany([
+        { name: 'First' },
+        { name: 'Second' },
+        { name: 'Third' },
+      ]);
+
+      expect(records[0]!.id).toBe(1);
+      expect(records[1]!.id).toBe(2);
+      expect(records[2]!.id).toBe(3);
+      expect(h.autoincrementCounter).toBe(3);
+    } finally {
+      await GenServer.stop(aiRef);
+    }
+  });
+
+  it('makes inserted records visible via read-your-own-writes', async () => {
+    const { handle } = createHandle();
+
+    await handle.insertMany([
+      { name: 'Alice', tier: 'vip' },
+      { name: 'Bob', tier: 'basic' },
+    ]);
+
+    const all = await handle.all();
+    expect(all).toHaveLength(2);
+
+    const vips = await handle.where({ tier: 'vip' });
+    expect(vips).toHaveLength(1);
+    expect(vips[0]!.name).toBe('Alice');
+  });
+});
+
+// ── updateMany() ────────────────────────────────────────────────
+
+describe('TransactionBucketHandle updateMany()', () => {
+  it('updates all matching records and returns count', async () => {
+    await seedRecord({ name: 'Alice', tier: 'basic', score: 10 });
+    await seedRecord({ name: 'Bob', tier: 'vip', score: 20 });
+    await seedRecord({ name: 'Charlie', tier: 'basic', score: 30 });
+    const { handle } = createHandle();
+
+    const count = await handle.updateMany({ tier: 'basic' }, { score: 99 });
+    expect(count).toBe(2);
+
+    const basics = await handle.where({ tier: 'basic' });
+    for (const r of basics) {
+      expect(r.score).toBe(99);
+      expect(r._version).toBe(2);
+    }
+  });
+
+  it('returns 0 when no records match', async () => {
+    await seedRecord({ name: 'Alice', tier: 'vip' });
+    const { handle } = createHandle();
+
+    const count = await handle.updateMany({ tier: 'basic' }, { score: 99 });
+    expect(count).toBe(0);
+  });
+
+  it('works with buffered inserts (overlay)', async () => {
+    const { handle } = createHandle();
+
+    await handle.insertMany([
+      { name: 'Alice', tier: 'basic', score: 10 },
+      { name: 'Bob', tier: 'vip', score: 20 },
+    ]);
+
+    const count = await handle.updateMany({ tier: 'basic' }, { score: 99 });
+    expect(count).toBe(1);
+
+    const alice = await handle.findOne({ name: 'Alice' });
+    expect(alice!.score).toBe(99);
+  });
+
+  it('buffers updates without modifying real store', async () => {
+    const seeded = await seedRecord({ name: 'Alice', tier: 'basic', score: 0 });
+    const { handle } = createHandle();
+
+    await handle.updateMany({}, { score: 99 });
+
+    // Real store unchanged
+    const real = await GenServer.call(bucketRef, { type: 'get', key: seeded.id }) as StoreRecord;
+    expect(real.score).toBe(0);
+  });
+});
+
+// ── deleteMany() ────────────────────────────────────────────────
+
+describe('TransactionBucketHandle deleteMany()', () => {
+  it('deletes all matching records and returns count', async () => {
+    await seedRecord({ name: 'Alice', tier: 'basic' });
+    await seedRecord({ name: 'Bob', tier: 'vip' });
+    await seedRecord({ name: 'Charlie', tier: 'basic' });
+    const { handle } = createHandle();
+
+    const count = await handle.deleteMany({ tier: 'basic' });
+    expect(count).toBe(2);
+
+    const all = await handle.all();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.name).toBe('Bob');
+  });
+
+  it('returns 0 when no records match', async () => {
+    await seedRecord({ name: 'Alice', tier: 'vip' });
+    const { handle } = createHandle();
+
+    const count = await handle.deleteMany({ tier: 'basic' });
+    expect(count).toBe(0);
+  });
+
+  it('works with buffered inserts (overlay)', async () => {
+    const { handle } = createHandle();
+
+    await handle.insertMany([
+      { name: 'Alice', tier: 'basic' },
+      { name: 'Bob', tier: 'vip' },
+      { name: 'Charlie', tier: 'basic' },
+    ]);
+
+    const count = await handle.deleteMany({ tier: 'basic' });
+    expect(count).toBe(2);
+
+    const all = await handle.all();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.name).toBe('Bob');
+  });
+
+  it('buffers deletes without modifying real store', async () => {
+    const seeded = await seedRecord({ name: 'Alice', tier: 'basic' });
+    const { handle } = createHandle();
+
+    await handle.deleteMany({ tier: 'basic' });
+
+    // Real store still has it
+    const real = await GenServer.call(bucketRef, { type: 'get', key: seeded.id });
+    expect(real).toBeDefined();
+  });
+});
+
+// ── upsert() ────────────────────────────────────────────────────
+
+describe('TransactionBucketHandle upsert()', () => {
+  it('inserts when key does not exist', async () => {
+    const { handle } = createHandle();
+
+    const record = await handle.upsert({ name: 'Alice' });
+
+    expect(record.id).toMatch(UUID_RE);
+    expect(record.name).toBe('Alice');
+    expect(record._version).toBe(1);
+  });
+
+  it('updates when key exists in real store', async () => {
+    const seeded = await seedRecord({ name: 'Alice', score: 10 });
+    const { handle } = createHandle();
+
+    const record = await handle.upsert({ id: seeded.id, name: 'Alice Updated', score: 99 });
+
+    expect(record.id).toBe(seeded.id);
+    expect(record.name).toBe('Alice Updated');
+    expect(record.score).toBe(99);
+    expect(record._version).toBe(2);
+  });
+
+  it('updates when key exists in buffer (previously inserted)', async () => {
+    const { handle } = createHandle();
+
+    const inserted = await handle.insert({ name: 'Alice', score: 10 });
+    const upserted = await handle.upsert({ id: inserted.id, name: 'Alice Updated', score: 99 });
+
+    expect(upserted.id).toBe(inserted.id);
+    expect(upserted.name).toBe('Alice Updated');
+    expect(upserted._version).toBe(2);
+  });
+
+  it('inserts when key is not provided (generated)', async () => {
+    const { handle, buffer } = createHandle();
+
+    const record = await handle.upsert({ name: 'New User' });
+
+    expect(record.id).toMatch(UUID_RE);
+    expect(record._version).toBe(1);
+    expect(buffer.inserts.has(record.id)).toBe(true);
+  });
+});
+
 // ── Edge cases ──────────────────────────────────────────────────
 
 describe('TransactionBucketHandle edge cases', () => {

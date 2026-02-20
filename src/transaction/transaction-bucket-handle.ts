@@ -69,6 +69,43 @@ export class TransactionBucketHandle {
     this.#buffer.addDelete(key, existing);
   }
 
+  async insertMany(data: Record<string, unknown>[]): Promise<StoreRecord[]> {
+    const records: StoreRecord[] = [];
+    for (const item of data) {
+      records.push(await this.insert(item));
+    }
+    return records;
+  }
+
+  async updateMany(filter: WhereFilter, changes: Record<string, unknown>): Promise<number> {
+    const records = await this.where(filter);
+    for (const record of records) {
+      const key = (record as Record<string, unknown>)[this.#keyField];
+      await this.update(key, changes);
+    }
+    return records.length;
+  }
+
+  async deleteMany(filter: WhereFilter): Promise<number> {
+    const records = await this.where(filter);
+    for (const record of records) {
+      const key = (record as Record<string, unknown>)[this.#keyField];
+      await this.delete(key);
+    }
+    return records.length;
+  }
+
+  async upsert(data: Record<string, unknown>): Promise<StoreRecord> {
+    const keyValue = data[this.#keyField];
+    if (keyValue !== undefined) {
+      const existing = await this.get(keyValue);
+      if (existing !== undefined) {
+        return this.update(keyValue, data);
+      }
+    }
+    return this.insert(data);
+  }
+
   // ── Read operations (overlay → real store) ────────────────────
 
   async get(key: unknown): Promise<StoreRecord | undefined> {
