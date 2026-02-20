@@ -116,6 +116,10 @@ export type BucketCallMsg =
   | { readonly type: 'purgeExpired' }
   | { readonly type: 'commitBatch'; readonly operations: readonly CommitBatchOp[]; readonly autoincrementUpdate?: number }
   | { readonly type: 'rollbackBatch'; readonly undoOps: readonly UndoOp[] }
+  | { readonly type: 'insertMany'; readonly data: readonly Record<string, unknown>[] }
+  | { readonly type: 'updateMany'; readonly filter: WhereFilter; readonly changes: Record<string, unknown> }
+  | { readonly type: 'deleteMany'; readonly filter: WhereFilter }
+  | { readonly type: 'upsert'; readonly data: Record<string, unknown> }
   | { readonly type: 'getAutoincrementCounter' }
   | { readonly type: 'getStats' };
 
@@ -225,6 +229,14 @@ export function createBucketBehavior(
           return [handleMin(state, msg.field, msg.filter), state];
         case 'max':
           return [handleMax(state, msg.field, msg.filter), state];
+        case 'insertMany':
+          return handleInsertMany(bucketName, definition, eventBusRef, state, msg.data, ttlMs, maxSize);
+        case 'updateMany':
+          return handleUpdateMany(bucketName, definition, eventBusRef, state, msg.filter, msg.changes);
+        case 'deleteMany':
+          return handleDeleteMany(bucketName, definition, eventBusRef, state, msg.filter);
+        case 'upsert':
+          return handleUpsert(bucketName, definition, eventBusRef, state, msg.data, ttlMs, maxSize);
         case 'purgeExpired':
           return [handlePurgeExpired(bucketName, eventBusRef, state), state];
         case 'commitBatch':
@@ -344,6 +356,182 @@ function handleDelete(
   }
 
   return [undefined, state];
+}
+
+function handleInsertMany(
+  bucketName: string,
+  definition: BucketDefinition,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+  data: readonly Record<string, unknown>[],
+  ttlMs: number | undefined,
+  maxSize: number | undefined,
+): CallResult<StoreRecord[], BucketState> {
+  if (data.length === 0) return [[], state];
+
+  const savedCounter = state.autoincrementCounter;
+
+  try {
+    // 1. Prepare all records
+    const prepared: Array<{ key: unknown; record: StoreRecord }> = [];
+    for (const item of data) {
+      state.autoincrementCounter++;
+      const record = state.validator.prepareInsert(item, state.autoincrementCounter);
+      const recordObj = record as Record<string, unknown>;
+      const key = recordObj[definition.key];
+
+      if (ttlMs !== undefined && recordObj._expiresAt === undefined) {
+        recordObj._expiresAt = record._createdAt + ttlMs;
+      }
+
+      prepared.push({ key, record });
+    }
+
+    // 2. Validate primary key uniqueness (existing + cross-batch)
+    const batchKeys = new Set<unknown>();
+    for (const { key } of prepared) {
+      if (state.table.has(key)) {
+        throw new Error(`Record with key "${String(key)}" already exists in bucket "${bucketName}"`);
+      }
+      if (batchKeys.has(key)) {
+        throw new Error(`Duplicate key "${String(key)}" in batch for bucket "${bucketName}"`);
+      }
+      batchKeys.add(key);
+    }
+
+    // 3. Validate unique index constraints (existing + cross-batch)
+    state.indexManager.validateBatchInsert(
+      prepared.map(p => ({ key: p.key, record: p.record as Record<string, unknown> })),
+    );
+
+    // 4. Apply all inserts
+    for (const { key, record } of prepared) {
+      state.indexManager.addRecord(key, record as Record<string, unknown>);
+      state.table.set(key, record);
+    }
+
+    // 5. MaxSize eviction
+    if (maxSize !== undefined && state.table.size > maxSize) {
+      evictOldest(bucketName, eventBusRef, state, state.table.size - maxSize);
+    }
+
+    // 6. Events
+    for (const { key, record } of prepared) {
+      EventBus.publish<BucketInsertedEvent>(
+        eventBusRef,
+        `bucket.${bucketName}.inserted`,
+        { type: 'inserted', bucket: bucketName, key, record },
+      );
+    }
+
+    return [prepared.map(p => p.record), state];
+  } catch (error) {
+    state.autoincrementCounter = savedCounter;
+    throw error;
+  }
+}
+
+function handleUpdateMany(
+  bucketName: string,
+  definition: BucketDefinition,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+  filter: WhereFilter,
+  changes: Record<string, unknown>,
+): CallResult<number, BucketState> {
+  const records = selectWhere(state.table, filter, state.indexManager);
+  if (records.length === 0) return [0, state];
+
+  const keyField = definition.key;
+
+  // Prepare all updates
+  const updates = records.map(existing => {
+    const key = (existing as Record<string, unknown>)[keyField];
+    const newRecord = state.validator.prepareUpdate(existing, changes);
+    return { key, oldRecord: existing, newRecord };
+  });
+
+  // Apply with rollback on failure
+  const applied: Array<{ key: unknown; oldRecord: StoreRecord; newRecord: StoreRecord }> = [];
+  try {
+    for (const update of updates) {
+      state.indexManager.updateRecord(
+        update.key,
+        update.oldRecord as Record<string, unknown>,
+        update.newRecord as Record<string, unknown>,
+      );
+      state.table.set(update.key, update.newRecord);
+      applied.push(update);
+    }
+  } catch (error) {
+    // Rollback applied updates in reverse order
+    for (let i = applied.length - 1; i >= 0; i--) {
+      const { key, oldRecord, newRecord } = applied[i]!;
+      state.indexManager.updateRecord(
+        key,
+        newRecord as Record<string, unknown>,
+        oldRecord as Record<string, unknown>,
+      );
+      state.table.set(key, oldRecord);
+    }
+    throw error;
+  }
+
+  // Events
+  for (const { key, oldRecord, newRecord } of updates) {
+    EventBus.publish<BucketUpdatedEvent>(
+      eventBusRef,
+      `bucket.${bucketName}.updated`,
+      { type: 'updated', bucket: bucketName, key, oldRecord, newRecord },
+    );
+  }
+
+  return [updates.length, state];
+}
+
+function handleDeleteMany(
+  bucketName: string,
+  definition: BucketDefinition,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+  filter: WhereFilter,
+): CallResult<number, BucketState> {
+  const records = selectWhere(state.table, filter, state.indexManager);
+  if (records.length === 0) return [0, state];
+
+  const keyField = definition.key;
+
+  for (const record of records) {
+    const key = (record as Record<string, unknown>)[keyField];
+    state.indexManager.removeRecord(key, record as Record<string, unknown>);
+    state.table.delete(key);
+
+    EventBus.publish<BucketDeletedEvent>(
+      eventBusRef,
+      `bucket.${bucketName}.deleted`,
+      { type: 'deleted', bucket: bucketName, key, record },
+    );
+  }
+
+  return [records.length, state];
+}
+
+function handleUpsert(
+  bucketName: string,
+  definition: BucketDefinition,
+  eventBusRef: EventBusRef,
+  state: BucketState,
+  data: Record<string, unknown>,
+  ttlMs: number | undefined,
+  maxSize: number | undefined,
+): CallResult<StoreRecord, BucketState> {
+  const keyValue = data[definition.key];
+
+  if (keyValue !== undefined && state.table.has(keyValue)) {
+    return handleUpdate(bucketName, eventBusRef, state, keyValue, data);
+  }
+
+  return handleInsert(bucketName, definition, eventBusRef, state, data, ttlMs, maxSize);
 }
 
 function evictOldest(

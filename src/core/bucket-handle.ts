@@ -40,6 +40,26 @@ export class BucketHandle {
     await GenServer.call(this.#ref, { type: 'delete', key });
   }
 
+  async insertMany(data: Record<string, unknown>[]): Promise<StoreRecord[]> {
+    const reply = await GenServer.call(this.#ref, { type: 'insertMany', data });
+    return reply as StoreRecord[];
+  }
+
+  async updateMany(filter: WhereFilter, changes: Record<string, unknown>): Promise<number> {
+    const reply = await GenServer.call(this.#ref, { type: 'updateMany', filter, changes });
+    return reply as number;
+  }
+
+  async deleteMany(filter: WhereFilter): Promise<number> {
+    const reply = await GenServer.call(this.#ref, { type: 'deleteMany', filter });
+    return reply as number;
+  }
+
+  async upsert(data: Record<string, unknown>): Promise<StoreRecord> {
+    const reply = await GenServer.call(this.#ref, { type: 'upsert', data });
+    return reply as StoreRecord;
+  }
+
   async all(): Promise<StoreRecord[]> {
     const reply = await GenServer.call(this.#ref, { type: 'all' });
     return reply as StoreRecord[];
