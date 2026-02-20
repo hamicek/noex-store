@@ -31,7 +31,7 @@ export class TransactionBucketHandle {
     this.#ref = ref;
     this.#buffer = buffer;
     this.#keyField = definition.key;
-    this.#validator = new SchemaValidator(name, definition.schema, definition.key);
+    this.#validator = new SchemaValidator(name, definition.schema, definition.key, definition.validate);
     this.#autoincrementCounter = autoincrementCounter;
   }
 

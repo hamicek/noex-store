@@ -44,11 +44,18 @@ export class SchemaValidator {
   readonly #bucketName: string;
   readonly #schema: SchemaDefinition;
   readonly #keyField: string;
+  readonly #bucketValidate: ((record: Record<string, unknown>) => string[] | undefined) | undefined;
 
-  constructor(bucketName: string, schema: SchemaDefinition, keyField: string) {
+  constructor(
+    bucketName: string,
+    schema: SchemaDefinition,
+    keyField: string,
+    bucketValidate?: (record: Record<string, unknown>) => string[] | undefined,
+  ) {
     this.#bucketName = bucketName;
     this.#schema = schema;
     this.#keyField = keyField;
+    this.#bucketValidate = bucketValidate;
   }
 
   /**
@@ -150,7 +157,16 @@ export class SchemaValidator {
 
   #validate(record: Record<string, unknown>): void {
     const issues: ValidationIssue[] = [];
-    this.#validateSchema(this.#schema, record, '', issues, 0);
+    this.#validateSchema(this.#schema, record, '', issues, 0, record);
+
+    if (this.#bucketValidate != null) {
+      const errors = this.#bucketValidate(record);
+      if (errors != null) {
+        for (const message of errors) {
+          issues.push({ field: '_record', message, code: 'custom' });
+        }
+      }
+    }
 
     if (issues.length > 0) {
       throw new ValidationError(this.#bucketName, issues);
@@ -163,6 +179,7 @@ export class SchemaValidator {
     prefix: string,
     issues: ValidationIssue[],
     depth: number,
+    rootRecord: Record<string, unknown>,
   ): void {
     if (depth > MAX_NESTING_DEPTH) return;
 
@@ -188,7 +205,7 @@ export class SchemaValidator {
         continue;
       }
 
-      this.#validateConstraints(path, value, def, issues);
+      this.#validateConstraints(path, value, def, issues, rootRecord);
 
       if (def.type === 'object' && def.properties != null) {
         this.#validateSchema(
@@ -197,11 +214,12 @@ export class SchemaValidator {
           path,
           issues,
           depth + 1,
+          rootRecord,
         );
       }
 
       if (def.type === 'array' && def.items != null) {
-        this.#validateArrayItems(path, value as unknown[], def.items, issues, depth + 1);
+        this.#validateArrayItems(path, value as unknown[], def.items, issues, depth + 1, rootRecord);
       }
     }
   }
@@ -212,6 +230,7 @@ export class SchemaValidator {
     itemDef: FieldDefinition,
     issues: ValidationIssue[],
     depth: number,
+    rootRecord: Record<string, unknown>,
   ): void {
     if (depth > MAX_NESTING_DEPTH) return;
 
@@ -232,7 +251,7 @@ export class SchemaValidator {
         continue;
       }
 
-      this.#validateConstraints(itemPath, value, itemDef, issues);
+      this.#validateConstraints(itemPath, value, itemDef, issues, rootRecord);
 
       if (itemDef.type === 'object' && itemDef.properties != null) {
         this.#validateSchema(
@@ -241,11 +260,12 @@ export class SchemaValidator {
           itemPath,
           issues,
           depth + 1,
+          rootRecord,
         );
       }
 
       if (itemDef.type === 'array' && itemDef.items != null) {
-        this.#validateArrayItems(itemPath, value as unknown[], itemDef.items, issues, depth + 1);
+        this.#validateArrayItems(itemPath, value as unknown[], itemDef.items, issues, depth + 1, rootRecord);
       }
     }
   }
@@ -255,6 +275,7 @@ export class SchemaValidator {
     value: unknown,
     def: FieldDefinition,
     issues: ValidationIssue[],
+    rootRecord: Record<string, unknown>,
   ): void {
     if (def.enum != null && !def.enum.includes(value)) {
       issues.push({
@@ -309,6 +330,13 @@ export class SchemaValidator {
           message: `Maximum value is ${String(def.max)}`,
           code: 'max',
         });
+      }
+    }
+
+    if (def.validate != null) {
+      const error = def.validate(value, rootRecord);
+      if (error !== undefined) {
+        issues.push({ field, message: error, code: 'custom' });
       }
     }
   }

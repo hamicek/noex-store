@@ -29,6 +29,8 @@ export interface FieldDefinition {
   readonly properties?: SchemaDefinition;
   /** Item schema for `type: 'array'` — validates each element of the array. */
   readonly items?: FieldDefinition;
+  /** Custom field-level validator. Receives the field value and the full root record. Return an error message string or `undefined` if valid. */
+  readonly validate?: (value: unknown, record: Record<string, unknown>) => string | undefined;
 }
 
 export type SchemaDefinition = Readonly<Record<string, FieldDefinition>>;
@@ -44,6 +46,8 @@ export interface BucketDefinition {
   readonly ttl?: number | string;
   /** Maximum number of records. Oldest records (by _createdAt) are evicted on overflow. */
   readonly maxSize?: number;
+  /** Cross-field record-level validator. Return an array of error messages or `undefined` if valid. */
+  readonly validate?: (record: Record<string, unknown>) => string[] | undefined;
 }
 
 export interface BucketSchemaUpdate {

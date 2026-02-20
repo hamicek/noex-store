@@ -164,7 +164,7 @@ export function createBucketBehavior(
   return {
     init(): BucketState {
       const table = new Map<unknown, StoreRecord>();
-      const validator = new SchemaValidator(bucketName, definition.schema, definition.key);
+      const validator = new SchemaValidator(bucketName, definition.schema, definition.key, definition.validate);
       const indexManager = new IndexManager(
         bucketName,
         definition.indexes ?? [],

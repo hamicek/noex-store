@@ -896,6 +896,401 @@ describe('SchemaValidator nested validation in prepareUpdate', () => {
   });
 });
 
+// ── Field-level custom validators ─────────────────────────────────
+
+describe('SchemaValidator field-level custom validate', () => {
+  it('rejects when field validate returns an error message', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      username: {
+        type: 'string',
+        required: true,
+        validate: (value) =>
+          (value as string).startsWith('_') ? 'Username must not start with underscore' : undefined,
+      },
+    });
+    try {
+      v.prepareInsert({ username: '_bad' }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('username');
+      expect(ve.issues[0]!.code).toBe('custom');
+      expect(ve.issues[0]!.message).toBe('Username must not start with underscore');
+    }
+  });
+
+  it('passes when field validate returns undefined', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      username: {
+        type: 'string',
+        required: true,
+        validate: () => undefined,
+      },
+    });
+    const record = v.prepareInsert({ username: 'alice' }, 1);
+    expect(record.username).toBe('alice');
+  });
+
+  it('provides the root record as second argument', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      startDate: { type: 'string', required: true },
+      endDate: {
+        type: 'string',
+        required: true,
+        validate: (value, record) =>
+          (value as string) <= (record.startDate as string)
+            ? 'endDate must be after startDate'
+            : undefined,
+      },
+    });
+    expect(() =>
+      v.prepareInsert({ startDate: '2024-06-01', endDate: '2024-01-01' }, 1),
+    ).toThrow(ValidationError);
+
+    const record = v.prepareInsert(
+      { startDate: '2024-01-01', endDate: '2024-06-01' },
+      1,
+    );
+    expect(record.endDate).toBe('2024-06-01');
+  });
+
+  it('runs custom validate after built-in constraints', () => {
+    const validateFn = vi.fn(() => undefined);
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      age: { type: 'number', min: 0, validate: validateFn },
+    });
+
+    // Built-in 'min' check fails first — custom validate still runs for same field
+    // (both issues collected)
+    try {
+      v.prepareInsert({ age: -1 }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      const codes = ve.issues.map((i) => i.code);
+      expect(codes).toContain('min');
+    }
+    expect(validateFn).toHaveBeenCalledWith(-1, expect.any(Object));
+  });
+
+  it('collects custom error alongside built-in constraint errors', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      code: {
+        type: 'string',
+        minLength: 3,
+        validate: (value) =>
+          (value as string).includes(' ') ? 'Code must not contain spaces' : undefined,
+      },
+    });
+    try {
+      v.prepareInsert({ code: 'a b' }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      // minLength fails (length 3 passes, "a b" is length 3 — actually minLength 3 passes),
+      // but custom fails because of the space
+      expect(ve.issues.some((i) => i.code === 'custom')).toBe(true);
+      expect(ve.issues[0]!.message).toBe('Code must not contain spaces');
+    }
+  });
+
+  it('skips custom validate when value is undefined/null (not required)', () => {
+    const validateFn = vi.fn(() => 'should not be called');
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      nickname: { type: 'string', validate: validateFn },
+    });
+    const record = v.prepareInsert({}, 1);
+    expect(record.nickname).toBeUndefined();
+    expect(validateFn).not.toHaveBeenCalled();
+  });
+
+  it('skips custom validate when type check fails', () => {
+    const validateFn = vi.fn(() => undefined);
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      name: { type: 'string', validate: validateFn },
+    });
+    expect(() => v.prepareInsert({ name: 123 }, 1)).toThrow(ValidationError);
+    expect(validateFn).not.toHaveBeenCalled();
+  });
+
+  it('works on nested object properties', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      address: {
+        type: 'object',
+        properties: {
+          zip: {
+            type: 'string',
+            validate: (value) =>
+              !/^\d{5}$/.test(value as string) ? 'ZIP must be 5 digits' : undefined,
+          },
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ address: { zip: 'ABC' } }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues[0]!.field).toBe('address.zip');
+      expect(ve.issues[0]!.code).toBe('custom');
+      expect(ve.issues[0]!.message).toBe('ZIP must be 5 digits');
+    }
+  });
+
+  it('nested field validate receives the root record', () => {
+    let capturedRecord: Record<string, unknown> | undefined;
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      country: { type: 'string', required: true },
+      address: {
+        type: 'object',
+        properties: {
+          zip: {
+            type: 'string',
+            validate: (_value, record) => {
+              capturedRecord = record;
+              return undefined;
+            },
+          },
+        },
+      },
+    });
+    v.prepareInsert({ country: 'CZ', address: { zip: '11000' } }, 1);
+    expect(capturedRecord).toBeDefined();
+    expect(capturedRecord!.country).toBe('CZ');
+  });
+
+  it('works on array item definitions', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      scores: {
+        type: 'array',
+        items: {
+          type: 'number',
+          validate: (value) =>
+            (value as number) % 1 !== 0 ? 'Score must be an integer' : undefined,
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ scores: [10, 20.5, 30] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('scores[1]');
+      expect(ve.issues[0]!.code).toBe('custom');
+      expect(ve.issues[0]!.message).toBe('Score must be an integer');
+    }
+  });
+
+  it('array item validate receives root record', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      maxScore: { type: 'number', required: true },
+      scores: {
+        type: 'array',
+        items: {
+          type: 'number',
+          validate: (value, record) =>
+            (value as number) > (record.maxScore as number)
+              ? 'Score exceeds maximum'
+              : undefined,
+        },
+      },
+    });
+    try {
+      v.prepareInsert({ maxScore: 100, scores: [50, 150] }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('scores[1]');
+      expect(ve.issues[0]!.message).toBe('Score exceeds maximum');
+    }
+  });
+
+  it('field validate runs during prepareUpdate', () => {
+    const schema = {
+      id: { type: 'string' as const, generated: 'uuid' as const },
+      status: {
+        type: 'string' as const,
+        validate: (value: unknown) =>
+          value === 'invalid' ? 'Invalid status' : undefined,
+      },
+    };
+    const v = makeValidator(schema);
+    const existing = {
+      id: 'test-id',
+      status: 'active',
+      _version: 1,
+      _createdAt: Date.now() - 1000,
+      _updatedAt: Date.now() - 1000,
+    } as import('../../src/types/index.js').StoreRecord;
+
+    expect(() => v.prepareUpdate(existing, { status: 'invalid' })).toThrow(ValidationError);
+    const updated = v.prepareUpdate(existing, { status: 'completed' });
+    expect(updated.status).toBe('completed');
+  });
+});
+
+// ── Bucket-level custom validators ───────────────────────────────
+
+describe('SchemaValidator bucket-level custom validate', () => {
+  it('rejects when bucket validate returns error messages', () => {
+    const v = new SchemaValidator(
+      'orders',
+      {
+        id: { type: 'string', generated: 'uuid' },
+        status: { type: 'string', required: true },
+        trackingNumber: { type: 'string' },
+      },
+      'id',
+      (record) => {
+        const errors: string[] = [];
+        if (record.status === 'shipped' && !record.trackingNumber) {
+          errors.push('trackingNumber is required when status is shipped');
+        }
+        return errors.length > 0 ? errors : undefined;
+      },
+    );
+
+    try {
+      v.prepareInsert({ status: 'shipped' }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues).toHaveLength(1);
+      expect(ve.issues[0]!.field).toBe('_record');
+      expect(ve.issues[0]!.code).toBe('custom');
+      expect(ve.issues[0]!.message).toBe('trackingNumber is required when status is shipped');
+    }
+  });
+
+  it('passes when bucket validate returns undefined', () => {
+    const v = new SchemaValidator(
+      'orders',
+      {
+        id: { type: 'string', generated: 'uuid' },
+        status: { type: 'string', required: true },
+      },
+      'id',
+      () => undefined,
+    );
+    const record = v.prepareInsert({ status: 'pending' }, 1);
+    expect(record.status).toBe('pending');
+  });
+
+  it('collects multiple bucket-level errors', () => {
+    const v = new SchemaValidator(
+      'test',
+      {
+        id: { type: 'string', generated: 'uuid' },
+        a: { type: 'string' },
+        b: { type: 'string' },
+      },
+      'id',
+      () => ['Error one', 'Error two'],
+    );
+    try {
+      v.prepareInsert({ a: 'x', b: 'y' }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      const customIssues = ve.issues.filter((i) => i.code === 'custom');
+      expect(customIssues).toHaveLength(2);
+      expect(customIssues[0]!.message).toBe('Error one');
+      expect(customIssues[1]!.message).toBe('Error two');
+    }
+  });
+
+  it('combines field-level and bucket-level errors', () => {
+    const v = new SchemaValidator(
+      'test',
+      {
+        id: { type: 'string', generated: 'uuid' },
+        name: { type: 'string', required: true },
+        status: { type: 'string', required: true },
+      },
+      'id',
+      (record) =>
+        record.status === 'bad' ? ['Bad status at record level'] : undefined,
+    );
+    try {
+      // Missing required 'name' + bucket-level error for status
+      v.prepareInsert({ status: 'bad' }, 1);
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.issues.length).toBeGreaterThanOrEqual(2);
+      expect(ve.issues.some((i) => i.code === 'required' && i.field === 'name')).toBe(true);
+      expect(ve.issues.some((i) => i.code === 'custom' && i.field === '_record')).toBe(true);
+    }
+  });
+
+  it('bucket validate runs during prepareUpdate', () => {
+    const v = new SchemaValidator(
+      'orders',
+      {
+        id: { type: 'string', generated: 'uuid' },
+        status: { type: 'string', required: true },
+        trackingNumber: { type: 'string' },
+      },
+      'id',
+      (record) => {
+        if (record.status === 'shipped' && !record.trackingNumber) {
+          return ['trackingNumber is required when status is shipped'];
+        }
+        return undefined;
+      },
+    );
+
+    const existing = {
+      id: 'order-1',
+      status: 'pending',
+      _version: 1,
+      _createdAt: Date.now() - 1000,
+      _updatedAt: Date.now() - 1000,
+    } as import('../../src/types/index.js').StoreRecord;
+
+    expect(() => v.prepareUpdate(existing, { status: 'shipped' })).toThrow(ValidationError);
+
+    const updated = v.prepareUpdate(existing, {
+      status: 'shipped',
+      trackingNumber: 'TR-123',
+    });
+    expect(updated.status).toBe('shipped');
+    expect(updated.trackingNumber).toBe('TR-123');
+  });
+
+  it('bucket validate receives the complete record with meta fields', () => {
+    let receivedRecord: Record<string, unknown> | undefined;
+    const v = new SchemaValidator(
+      'test',
+      { id: { type: 'string', generated: 'uuid' } },
+      'id',
+      (record) => {
+        receivedRecord = record;
+        return undefined;
+      },
+    );
+    v.prepareInsert({}, 1);
+    expect(receivedRecord).toBeDefined();
+    expect(receivedRecord!._version).toBe(1);
+    expect(typeof receivedRecord!._createdAt).toBe('number');
+    expect(typeof receivedRecord!.id).toBe('string');
+  });
+
+  it('works without bucket validate (backward compatible)', () => {
+    const v = makeValidator({
+      id: { type: 'string', generated: 'uuid' },
+      name: { type: 'string', required: true },
+    });
+    const record = v.prepareInsert({ name: 'Alice' }, 1);
+    expect(record.name).toBe('Alice');
+  });
+});
+
 // ── ValidationError ──────────────────────────────────────────────
 
 describe('ValidationError', () => {
