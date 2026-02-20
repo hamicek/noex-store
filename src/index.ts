@@ -4,6 +4,7 @@ export type {
   GeneratedType,
   FormatType,
   EtsTableType,
+  OnDeleteAction,
   FieldDefinition,
   SchemaDefinition,
   BucketDefinition,
@@ -51,6 +52,9 @@ export { createBucketBehavior } from './core/bucket-server.js';
 
 // Core — Index Manager
 export { IndexManager } from './core/index-manager.js';
+
+// Core — Ref Manager
+export { RefManager, ReferentialIntegrityError } from './core/ref-manager.js';
 
 // Core — Bucket Handle
 export { BucketHandle } from './core/bucket-handle.js';

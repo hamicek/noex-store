@@ -3,6 +3,7 @@ import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
 import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, DeclarativeQueryConfig, QueryInfo } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
+import { RefManager } from './ref-manager.js';
 import { StorePersistence } from '../persistence/store-persistence.js';
 import { QueryManager } from '../reactive/query-manager.js';
 import { TtlManager } from '../lifecycle/ttl-manager.js';
@@ -111,6 +112,7 @@ export class Store {
   readonly #queryManager: QueryManager;
   readonly #persistence: StorePersistence | null;
   readonly #ttlManager: TtlManager;
+  readonly #refManager: RefManager;
   #eventBusUnsub: (() => Promise<void>) | null = null;
 
   private constructor(
@@ -125,6 +127,7 @@ export class Store {
     this.#eventBusRef = eventBusRef;
     this.#persistence = persistence;
     this.#ttlManager = ttlManager;
+    this.#refManager = new RefManager((n) => this.#rawBucket(n));
     this.#queryManager = new QueryManager((n) => this.bucket(n));
   }
 
@@ -166,6 +169,7 @@ export class Store {
     }
 
     this.#validateDefinition(name, definition);
+    this.#refManager.registerBucket(name, definition);
     this.#definitions.set(name, definition);
 
     let initialData: BucketInitialData | undefined;
@@ -192,9 +196,21 @@ export class Store {
     if (definition.ttl !== undefined) {
       this.#ttlManager.registerBucket(name, ref, parseTtl(definition.ttl));
     }
+
+    // Index existing records (from persistence) for ref integrity tracking
+    await this.#refManager.indexExistingRecords(name);
   }
 
   bucket(name: string): BucketHandle {
+    const ref = this.#refs.get(name);
+    if (ref === undefined) {
+      throw new BucketNotDefinedError(name);
+    }
+    return new BucketHandle(name, ref, this.#refManager);
+  }
+
+  /** Raw handle without ref validation — used by RefManager for cascade operations. */
+  #rawBucket(name: string): BucketHandle {
     const ref = this.#refs.get(name);
     if (ref === undefined) {
       throw new BucketNotDefinedError(name);
@@ -216,6 +232,7 @@ export class Store {
 
     this.#queryManager.unsubscribeByBucket(name);
     this.#ttlManager.unregisterBucket(name);
+    this.#refManager.unregisterBucket(name);
 
     if (this.#persistence) {
       this.#persistence.unregisterBucket(name);

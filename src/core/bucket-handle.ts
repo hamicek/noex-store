@@ -1,20 +1,26 @@
 import { GenServer } from '@hamicek/noex';
 import type { PaginateOptions, PaginatedResult, StoreRecord, WhereFilter } from '../types/index.js';
 import type { BucketRef } from './bucket-server.js';
+import type { RefManager } from './ref-manager.js';
 
 /**
  * Stateless proxy over a BucketServer GenServer.
  *
  * Each call delegates to `GenServer.call` — the handle itself holds
  * only the bucket name and a typed ref; creating one is effectively free.
+ *
+ * When a {@link RefManager} is provided, write operations are intercepted
+ * to enforce referential integrity constraints.
  */
 export class BucketHandle {
   readonly #name: string;
   readonly #ref: BucketRef;
+  readonly #refManager: RefManager | null;
 
-  constructor(name: string, ref: BucketRef) {
+  constructor(name: string, ref: BucketRef, refManager?: RefManager) {
     this.#name = name;
     this.#ref = ref;
+    this.#refManager = refManager ?? null;
   }
 
   get name(): string {
@@ -22,8 +28,13 @@ export class BucketHandle {
   }
 
   async insert(data: Record<string, unknown>): Promise<StoreRecord> {
+    if (this.#refManager) {
+      await this.#refManager.validateInsertRefs(this.#name, data);
+    }
     const reply = await GenServer.call(this.#ref, { type: 'insert', data });
-    return reply as StoreRecord;
+    const record = reply as StoreRecord;
+    this.#refManager?.onRecordInserted(this.#name, record as Record<string, unknown>);
+    return record;
   }
 
   async get(key: unknown): Promise<StoreRecord | undefined> {
@@ -32,32 +43,80 @@ export class BucketHandle {
   }
 
   async update(key: unknown, changes: Record<string, unknown>): Promise<StoreRecord> {
+    if (this.#refManager) {
+      await this.#refManager.validateUpdateRefs(this.#name, changes);
+    }
     const reply = await GenServer.call(this.#ref, { type: 'update', key, changes });
-    return reply as StoreRecord;
+    const record = reply as StoreRecord;
+    this.#refManager?.onRecordUpdated(this.#name, key, changes);
+    return record;
   }
 
   async delete(key: unknown): Promise<void> {
+    if (this.#refManager) {
+      await this.#refManager.handleDelete(this.#name, key);
+    }
     await GenServer.call(this.#ref, { type: 'delete', key });
+    this.#refManager?.onRecordDeleted(this.#name, key);
   }
 
   async insertMany(data: Record<string, unknown>[]): Promise<StoreRecord[]> {
+    if (this.#refManager) {
+      for (const item of data) {
+        await this.#refManager.validateInsertRefs(this.#name, item);
+      }
+    }
     const reply = await GenServer.call(this.#ref, { type: 'insertMany', data });
-    return reply as StoreRecord[];
+    const records = reply as StoreRecord[];
+    if (this.#refManager) {
+      for (const record of records) {
+        this.#refManager.onRecordInserted(this.#name, record as Record<string, unknown>);
+      }
+    }
+    return records;
   }
 
   async updateMany(filter: WhereFilter, changes: Record<string, unknown>): Promise<number> {
+    if (this.#refManager) {
+      await this.#refManager.validateUpdateRefs(this.#name, changes);
+      // Pre-query affected records so we can update the ref index afterwards
+      const affected = await this.where(filter);
+      const count = await GenServer.call(this.#ref, { type: 'updateMany', filter, changes }) as number;
+      for (const record of affected) {
+        const key = this.#refManager.extractKey(this.#name, record as Record<string, unknown>);
+        this.#refManager.onRecordUpdated(this.#name, key, changes);
+      }
+      return count;
+    }
     const reply = await GenServer.call(this.#ref, { type: 'updateMany', filter, changes });
     return reply as number;
   }
 
   async deleteMany(filter: WhereFilter): Promise<number> {
+    if (this.#refManager) {
+      const affected = await this.where(filter);
+      await this.#refManager.handleDeleteMany(this.#name, affected as Record<string, unknown>[]);
+      const count = await GenServer.call(this.#ref, { type: 'deleteMany', filter }) as number;
+      for (const record of affected) {
+        this.#refManager.onRecordDeleted(
+          this.#name,
+          this.#refManager.extractKey(this.#name, record as Record<string, unknown>),
+        );
+      }
+      return count;
+    }
     const reply = await GenServer.call(this.#ref, { type: 'deleteMany', filter });
     return reply as number;
   }
 
   async upsert(data: Record<string, unknown>): Promise<StoreRecord> {
+    if (this.#refManager) {
+      await this.#refManager.validateInsertRefs(this.#name, data);
+    }
     const reply = await GenServer.call(this.#ref, { type: 'upsert', data });
-    return reply as StoreRecord;
+    const record = reply as StoreRecord;
+    this.#refManager?.onRecordUpserted(this.#name, record as Record<string, unknown>);
+    return record;
   }
 
   async all(): Promise<StoreRecord[]> {

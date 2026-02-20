@@ -3,6 +3,7 @@ export type {
   GeneratedType,
   FormatType,
   EtsTableType,
+  OnDeleteAction,
   FieldDefinition,
   SchemaDefinition,
   BucketDefinition,

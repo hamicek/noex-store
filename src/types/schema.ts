@@ -8,6 +8,8 @@ export type FormatType = 'email' | 'url' | 'iso-date';
 
 export type EtsTableType = 'set' | 'ordered_set' | 'bag' | 'duplicate_bag';
 
+export type OnDeleteAction = 'restrict' | 'cascade' | 'set_null';
+
 export interface FieldDefinition {
   readonly type: FieldType;
   readonly required?: boolean;
@@ -21,6 +23,7 @@ export interface FieldDefinition {
   readonly maxLength?: number;
   readonly pattern?: string;
   readonly ref?: string;
+  readonly onDelete?: OnDeleteAction;
   readonly unique?: boolean;
 }
 
