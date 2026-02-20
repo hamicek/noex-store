@@ -12,7 +12,9 @@ import type {
   BucketUpdatedEvent,
   PaginatedResult,
   StoreRecord,
+  WhereFilter,
 } from '../types/index.js';
+import { isFilterOperators, matchesFilter } from './filter-matcher.js';
 import { IndexManager } from './index-manager.js';
 import { SchemaValidator } from './schema-validator.js';
 import { TransactionConflictError } from './store.js';
@@ -99,18 +101,18 @@ export type BucketCallMsg =
   | { readonly type: 'update'; readonly key: unknown; readonly changes: Record<string, unknown> }
   | { readonly type: 'delete'; readonly key: unknown }
   | { readonly type: 'all' }
-  | { readonly type: 'where'; readonly filter: Record<string, unknown> }
-  | { readonly type: 'findOne'; readonly filter: Record<string, unknown> }
-  | { readonly type: 'count'; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'where'; readonly filter: WhereFilter }
+  | { readonly type: 'findOne'; readonly filter: WhereFilter }
+  | { readonly type: 'count'; readonly filter?: WhereFilter }
   | { readonly type: 'clear' }
   | { readonly type: 'getSnapshot' }
   | { readonly type: 'first'; readonly n: number }
   | { readonly type: 'last'; readonly n: number }
   | { readonly type: 'paginate'; readonly after?: unknown; readonly limit: number }
-  | { readonly type: 'sum'; readonly field: string; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'avg'; readonly field: string; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'min'; readonly field: string; readonly filter?: Record<string, unknown> }
-  | { readonly type: 'max'; readonly field: string; readonly filter?: Record<string, unknown> }
+  | { readonly type: 'sum'; readonly field: string; readonly filter?: WhereFilter }
+  | { readonly type: 'avg'; readonly field: string; readonly filter?: WhereFilter }
+  | { readonly type: 'min'; readonly field: string; readonly filter?: WhereFilter }
+  | { readonly type: 'max'; readonly field: string; readonly filter?: WhereFilter }
   | { readonly type: 'purgeExpired' }
   | { readonly type: 'commitBatch'; readonly operations: readonly CommitBatchOp[]; readonly autoincrementUpdate?: number }
   | { readonly type: 'rollbackBatch'; readonly undoOps: readonly UndoOp[] }
@@ -399,35 +401,25 @@ function handlePurgeExpired(
 
 // ── Query helpers ──────────────────────────────────────────────────
 
-function matchesFilter(
-  record: StoreRecord,
-  filter: Record<string, unknown>,
-): boolean {
-  for (const [field, value] of Object.entries(filter)) {
-    if ((record as Record<string, unknown>)[field] !== value) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function selectWhere(
   table: Map<unknown, StoreRecord>,
-  filter: Record<string, unknown>,
+  filter: WhereFilter,
   indexManager: IndexManager,
 ): StoreRecord[] {
-  const entries = Object.entries(filter);
-  if (entries.length === 0) return [...table.values()];
+  const fieldEntries = Object.entries(filter).filter(([k]) => k !== '$or' && k !== '$and');
+  if (fieldEntries.length === 0 && filter.$or === undefined && filter.$and === undefined) {
+    return [...table.values()];
+  }
 
-  // Try to find an indexed field to narrow candidates
-  for (const [field, value] of entries) {
+  // Index lookup only for plain values (exact match, not operators)
+  for (const [field, value] of fieldEntries) {
+    if (isFilterOperators(value)) continue;
     const keys = indexManager.lookup(field, value);
     if (keys === undefined) continue;
 
-    // We have candidate keys from the index — resolve records and apply remaining filter
-    const remaining: Record<string, unknown> = {};
-    for (const [f, v] of entries) {
-      if (f !== field) remaining[f] = v;
+    const remaining: WhereFilter = {};
+    for (const [f, v] of Object.entries(filter)) {
+      if (f !== field) (remaining as Record<string, unknown>)[f] = v;
     }
     const hasRemaining = Object.keys(remaining).length > 0;
 
@@ -441,35 +433,34 @@ function selectWhere(
     return results;
   }
 
-  // No indexed field found — full scan fallback
+  // Full scan fallback
   const results: StoreRecord[] = [];
   for (const record of table.values()) {
-    if (matchesFilter(record, filter)) {
-      results.push(record);
-    }
+    if (matchesFilter(record, filter)) results.push(record);
   }
   return results;
 }
 
 function findOne(
   table: Map<unknown, StoreRecord>,
-  filter: Record<string, unknown>,
+  filter: WhereFilter,
   indexManager: IndexManager,
 ): StoreRecord | undefined {
-  const entries = Object.entries(filter);
-  if (entries.length === 0) {
+  const fieldEntries = Object.entries(filter).filter(([k]) => k !== '$or' && k !== '$and');
+  if (fieldEntries.length === 0 && filter.$or === undefined && filter.$and === undefined) {
     const first = table.values().next();
     return first.done ? undefined : first.value;
   }
 
-  // Try to find an indexed field to narrow candidates
-  for (const [field, value] of entries) {
+  // Index lookup only for plain values
+  for (const [field, value] of fieldEntries) {
+    if (isFilterOperators(value)) continue;
     const keys = indexManager.lookup(field, value);
     if (keys === undefined) continue;
 
-    const remaining: Record<string, unknown> = {};
-    for (const [f, v] of entries) {
-      if (f !== field) remaining[f] = v;
+    const remaining: WhereFilter = {};
+    for (const [f, v] of Object.entries(filter)) {
+      if (f !== field) (remaining as Record<string, unknown>)[f] = v;
     }
     const hasRemaining = Object.keys(remaining).length > 0;
 
@@ -482,11 +473,9 @@ function findOne(
     return undefined;
   }
 
-  // No indexed field found — full scan fallback
+  // Full scan fallback
   for (const record of table.values()) {
-    if (matchesFilter(record, filter)) {
-      return record;
-    }
+    if (matchesFilter(record, filter)) return record;
   }
   return undefined;
 }
@@ -557,7 +546,7 @@ function handlePaginate(
 
 function getMatchingRecords(
   state: BucketState,
-  filter?: Record<string, unknown>,
+  filter?: WhereFilter,
 ): StoreRecord[] {
   if (filter === undefined) return [...state.table.values()];
   return selectWhere(state.table, filter, state.indexManager);
@@ -566,7 +555,7 @@ function getMatchingRecords(
 function handleSum(
   state: BucketState,
   field: string,
-  filter?: Record<string, unknown>,
+  filter?: WhereFilter,
 ): number {
   const records = getMatchingRecords(state, filter);
   let sum = 0;
@@ -580,7 +569,7 @@ function handleSum(
 function handleAvg(
   state: BucketState,
   field: string,
-  filter?: Record<string, unknown>,
+  filter?: WhereFilter,
 ): number {
   const records = getMatchingRecords(state, filter);
   if (records.length === 0) return 0;
@@ -599,7 +588,7 @@ function handleAvg(
 function handleMin(
   state: BucketState,
   field: string,
-  filter?: Record<string, unknown>,
+  filter?: WhereFilter,
 ): number | undefined {
   const records = getMatchingRecords(state, filter);
   let min: number | undefined;
@@ -615,7 +604,7 @@ function handleMin(
 function handleMax(
   state: BucketState,
   field: string,
-  filter?: Record<string, unknown>,
+  filter?: WhereFilter,
 ): number | undefined {
   const records = getMatchingRecords(state, filter);
   let max: number | undefined;

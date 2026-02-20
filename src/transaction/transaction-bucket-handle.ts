@@ -1,6 +1,7 @@
 import { GenServer } from '@hamicek/noex';
-import type { BucketDefinition, StoreRecord } from '../types/index.js';
+import type { BucketDefinition, StoreRecord, WhereFilter } from '../types/index.js';
 import type { BucketRef } from '../core/bucket-server.js';
+import { matchesFilter } from '../core/filter-matcher.js';
 import { SchemaValidator } from '../core/schema-validator.js';
 import type { BucketWriteBuffer } from './write-buffer.js';
 
@@ -83,17 +84,17 @@ export class TransactionBucketHandle {
     return this.#applyOverlay(realRecords);
   }
 
-  async where(filter: Record<string, unknown>): Promise<StoreRecord[]> {
+  async where(filter: WhereFilter): Promise<StoreRecord[]> {
     const records = await this.all();
     return records.filter((r) => matchesFilter(r, filter));
   }
 
-  async findOne(filter: Record<string, unknown>): Promise<StoreRecord | undefined> {
+  async findOne(filter: WhereFilter): Promise<StoreRecord | undefined> {
     const records = await this.all();
     return records.find((r) => matchesFilter(r, filter));
   }
 
-  async count(filter?: Record<string, unknown>): Promise<number> {
+  async count(filter?: WhereFilter): Promise<number> {
     if (filter !== undefined) {
       return (await this.where(filter)).length;
     }
@@ -122,16 +123,3 @@ export class TransactionBucketHandle {
   }
 }
 
-// ── Module-level helpers ──────────────────────────────────────────
-
-function matchesFilter(
-  record: StoreRecord,
-  filter: Record<string, unknown>,
-): boolean {
-  for (const [field, value] of Object.entries(filter)) {
-    if ((record as Record<string, unknown>)[field] !== value) {
-      return false;
-    }
-  }
-  return true;
-}

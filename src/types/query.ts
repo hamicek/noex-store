@@ -1,5 +1,37 @@
 import type { StoreRecord } from './record.js';
 
+// ── Filter Operators ─────────────────────────────────────────────
+
+/** Operators for a single field value. */
+export interface FilterOperators {
+  readonly $eq?: unknown;
+  readonly $neq?: unknown;
+  readonly $gt?: number | string;
+  readonly $gte?: number | string;
+  readonly $lt?: number | string;
+  readonly $lte?: number | string;
+  readonly $in?: readonly unknown[];
+  readonly $nin?: readonly unknown[];
+  /** Case-insensitive substring match. */
+  readonly $contains?: string;
+  readonly $startsWith?: string;
+  readonly $endsWith?: string;
+  /** `true` = field is not null/undefined, `false` = field is null/undefined. */
+  readonly $exists?: boolean;
+  /** Inclusive range: `[lower, upper]`. */
+  readonly $between?: readonly [number | string, number | string];
+}
+
+/** Filter value — plain value (= $eq) or an operator object. */
+export type FilterValue = unknown | FilterOperators;
+
+/** Top-level filter with optional logical combinators. */
+export interface WhereFilter {
+  readonly $or?: readonly WhereFilter[];
+  readonly $and?: readonly WhereFilter[];
+  readonly [field: string]: FilterValue;
+}
+
 // ── Pagination ───────────────────────────────────────────────────
 
 export interface PaginateOptions {
@@ -39,16 +71,16 @@ export interface QueryDependencies {
 export interface QueryBucket {
   get(key: unknown): Promise<StoreRecord | undefined>;
   all(): Promise<StoreRecord[]>;
-  where(filter: Record<string, unknown>): Promise<StoreRecord[]>;
-  findOne(filter: Record<string, unknown>): Promise<StoreRecord | undefined>;
-  count(filter?: Record<string, unknown>): Promise<number>;
+  where(filter: WhereFilter): Promise<StoreRecord[]>;
+  findOne(filter: WhereFilter): Promise<StoreRecord | undefined>;
+  count(filter?: WhereFilter): Promise<number>;
   first(n: number): Promise<StoreRecord[]>;
   last(n: number): Promise<StoreRecord[]>;
   paginate(options: PaginateOptions): Promise<PaginatedResult>;
-  sum(field: string, filter?: Record<string, unknown>): Promise<number>;
-  avg(field: string, filter?: Record<string, unknown>): Promise<number>;
-  min(field: string, filter?: Record<string, unknown>): Promise<number | undefined>;
-  max(field: string, filter?: Record<string, unknown>): Promise<number | undefined>;
+  sum(field: string, filter?: WhereFilter): Promise<number>;
+  avg(field: string, filter?: WhereFilter): Promise<number>;
+  min(field: string, filter?: WhereFilter): Promise<number | undefined>;
+  max(field: string, filter?: WhereFilter): Promise<number | undefined>;
 }
 
 /**

@@ -24,6 +24,9 @@ export type {
 } from './events.js';
 
 export type {
+  FilterOperators,
+  FilterValue,
+  WhereFilter,
   PaginateOptions,
   PaginatedResult,
   QueryDependencies,

@@ -1,4 +1,4 @@
-import type { QueryContext } from '../types/query.js';
+import type { QueryContext, WhereFilter } from '../types/query.js';
 import type { DeclarativeQueryConfig } from '../types/declarative-query.js';
 import type { StoreRecord } from '../types/record.js';
 
@@ -6,26 +6,43 @@ import type { StoreRecord } from '../types/record.js';
 
 const PARAM_RE = /^\{\{\s*params\.(\w+)\s*\}\}$/;
 
-function interpolateParams(
-  filter: Readonly<Record<string, unknown>>,
-  params: unknown,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-
-  for (const [key, value] of Object.entries(filter)) {
-    if (typeof value === 'string') {
-      const match = PARAM_RE.exec(value);
-      if (match !== null) {
-        const paramKey = match[1]!;
-        const p = params as Record<string, unknown> | undefined;
-        result[key] = p?.[paramKey];
-        continue;
-      }
+function interpolateValue(value: unknown, params: Record<string, unknown> | undefined): unknown {
+  if (typeof value === 'string') {
+    const match = PARAM_RE.exec(value);
+    if (match !== null) {
+      return params?.[match[1]!];
     }
-    result[key] = value;
+    return value;
   }
 
-  return result;
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+        return interpolateParams(item as Readonly<WhereFilter>, params);
+      }
+      return interpolateValue(item, params);
+    });
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    return interpolateParams(value as Readonly<WhereFilter>, params);
+  }
+
+  return value;
+}
+
+function interpolateParams(
+  filter: Readonly<WhereFilter>,
+  params: unknown,
+): WhereFilter {
+  const result: Record<string, unknown> = {};
+  const p = params as Record<string, unknown> | undefined;
+
+  for (const [key, value] of Object.entries(filter)) {
+    result[key] = interpolateValue(value, p);
+  }
+
+  return result as WhereFilter;
 }
 
 // ── Sorting ──────────────────────────────────────────────────────

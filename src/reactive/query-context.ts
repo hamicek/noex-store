@@ -1,4 +1,4 @@
-import type { QueryBucket, QueryContext, QueryDependencies, PaginateOptions, PaginatedResult } from '../types/query.js';
+import type { QueryBucket, QueryContext, QueryDependencies, PaginateOptions, PaginatedResult, WhereFilter } from '../types/query.js';
 import type { BucketHandle } from '../core/bucket-handle.js';
 import type { StoreRecord } from '../types/record.js';
 
@@ -47,17 +47,17 @@ class QueryBucketHandle implements QueryBucket {
     return this.#handle.all();
   }
 
-  where(filter: Record<string, unknown>): Promise<StoreRecord[]> {
+  where(filter: WhereFilter): Promise<StoreRecord[]> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.where(filter);
   }
 
-  findOne(filter: Record<string, unknown>): Promise<StoreRecord | undefined> {
+  findOne(filter: WhereFilter): Promise<StoreRecord | undefined> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.findOne(filter);
   }
 
-  count(filter?: Record<string, unknown>): Promise<number> {
+  count(filter?: WhereFilter): Promise<number> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.count(filter);
   }
@@ -77,22 +77,22 @@ class QueryBucketHandle implements QueryBucket {
     return this.#handle.paginate(options);
   }
 
-  sum(field: string, filter?: Record<string, unknown>): Promise<number> {
+  sum(field: string, filter?: WhereFilter): Promise<number> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.sum(field, filter);
   }
 
-  avg(field: string, filter?: Record<string, unknown>): Promise<number> {
+  avg(field: string, filter?: WhereFilter): Promise<number> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.avg(field, filter);
   }
 
-  min(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+  min(field: string, filter?: WhereFilter): Promise<number | undefined> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.min(field, filter);
   }
 
-  max(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+  max(field: string, filter?: WhereFilter): Promise<number | undefined> {
     this.#bucketDeps.add(this.#bucketName);
     return this.#handle.max(field, filter);
   }

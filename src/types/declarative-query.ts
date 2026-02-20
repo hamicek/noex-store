@@ -1,3 +1,5 @@
+import type { WhereFilter } from './query.js';
+
 // ── Declarative Query Config ──────────────────────────────────────
 
 export interface DeclarativeQueryConfig {
@@ -5,7 +7,7 @@ export interface DeclarativeQueryConfig {
   readonly bucket: string;
 
   /** Filter records (passed to bucket.where()). Values may contain `{{ params.x }}` for interpolation. */
-  readonly filter?: Readonly<Record<string, unknown>>;
+  readonly filter?: Readonly<WhereFilter>;
 
   /** Sort order. Keys are field names, values are 'asc' or 'desc'. */
   readonly sort?: Readonly<Record<string, 'asc' | 'desc'>>;

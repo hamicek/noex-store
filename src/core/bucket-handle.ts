@@ -1,5 +1,5 @@
 import { GenServer } from '@hamicek/noex';
-import type { PaginateOptions, PaginatedResult, StoreRecord } from '../types/index.js';
+import type { PaginateOptions, PaginatedResult, StoreRecord, WhereFilter } from '../types/index.js';
 import type { BucketRef } from './bucket-server.js';
 
 /**
@@ -45,17 +45,17 @@ export class BucketHandle {
     return reply as StoreRecord[];
   }
 
-  async where(filter: Record<string, unknown>): Promise<StoreRecord[]> {
+  async where(filter: WhereFilter): Promise<StoreRecord[]> {
     const reply = await GenServer.call(this.#ref, { type: 'where', filter });
     return reply as StoreRecord[];
   }
 
-  async findOne(filter: Record<string, unknown>): Promise<StoreRecord | undefined> {
+  async findOne(filter: WhereFilter): Promise<StoreRecord | undefined> {
     const reply = await GenServer.call(this.#ref, { type: 'findOne', filter });
     return reply as StoreRecord | undefined;
   }
 
-  async count(filter?: Record<string, unknown>): Promise<number> {
+  async count(filter?: WhereFilter): Promise<number> {
     const msg = filter !== undefined
       ? { type: 'count' as const, filter }
       : { type: 'count' as const };
@@ -86,7 +86,7 @@ export class BucketHandle {
     return reply as PaginatedResult;
   }
 
-  async sum(field: string, filter?: Record<string, unknown>): Promise<number> {
+  async sum(field: string, filter?: WhereFilter): Promise<number> {
     const msg = filter !== undefined
       ? { type: 'sum' as const, field, filter }
       : { type: 'sum' as const, field };
@@ -94,7 +94,7 @@ export class BucketHandle {
     return reply as number;
   }
 
-  async avg(field: string, filter?: Record<string, unknown>): Promise<number> {
+  async avg(field: string, filter?: WhereFilter): Promise<number> {
     const msg = filter !== undefined
       ? { type: 'avg' as const, field, filter }
       : { type: 'avg' as const, field };
@@ -102,7 +102,7 @@ export class BucketHandle {
     return reply as number;
   }
 
-  async min(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+  async min(field: string, filter?: WhereFilter): Promise<number | undefined> {
     const msg = filter !== undefined
       ? { type: 'min' as const, field, filter }
       : { type: 'min' as const, field };
@@ -110,7 +110,7 @@ export class BucketHandle {
     return reply as number | undefined;
   }
 
-  async max(field: string, filter?: Record<string, unknown>): Promise<number | undefined> {
+  async max(field: string, filter?: WhereFilter): Promise<number | undefined> {
     const msg = filter !== undefined
       ? { type: 'max' as const, field, filter }
       : { type: 'max' as const, field };
