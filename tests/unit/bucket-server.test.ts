@@ -17,6 +17,7 @@ import type {
   BucketInsertedEvent,
   BucketUpdatedEvent,
   BucketDeletedEvent,
+  GroupByResult,
   PaginatedResult,
   StoreRecord,
 } from '../../src/types/index.js';
@@ -916,6 +917,127 @@ describe('BucketServer aggregations', () => {
     await seedAgg();
     const result = await aggCall({ type: 'max', field: 'score', filter: { tier: 'vip' } });
     expect(result).toBe(30);
+  });
+
+  // groupBy
+  it('groupBy — count by single field', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'count' },
+    }) as GroupByResult[];
+
+    expect(result).toHaveLength(2);
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(2);
+    expect(basic.value).toBe(2);
+  });
+
+  it('groupBy — sum by single field', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'sum', field: 'score' },
+    }) as GroupByResult[];
+
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(40);   // 10 + 30
+    expect(basic.value).toBe(60); // 20 + 40
+  });
+
+  it('groupBy — avg by single field', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'avg', field: 'score' },
+    }) as GroupByResult[];
+
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(20);   // (10 + 30) / 2
+    expect(basic.value).toBe(30); // (20 + 40) / 2
+  });
+
+  it('groupBy — min by single field', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'min', field: 'score' },
+    }) as GroupByResult[];
+
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(10);
+    expect(basic.value).toBe(20);
+  });
+
+  it('groupBy — max by single field', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'max', field: 'score' },
+    }) as GroupByResult[];
+
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(30);
+    expect(basic.value).toBe(40);
+  });
+
+  it('groupBy — with filter', async () => {
+    await seedAgg();
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'sum', field: 'score' },
+      filter: { score: { $gte: 20 } },
+    }) as GroupByResult[];
+
+    // After filter: Bob(20,basic), Carol(30,vip), Dave(40,basic)
+    expect(result).toHaveLength(2);
+    const vip = result.find(r => r.key.tier === 'vip')!;
+    const basic = result.find(r => r.key.tier === 'basic')!;
+    expect(vip.value).toBe(30);
+    expect(basic.value).toBe(60);
+  });
+
+  it('groupBy — empty bucket returns empty array', async () => {
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['tier'],
+      aggregate: { function: 'count' },
+    }) as GroupByResult[];
+
+    expect(result).toEqual([]);
+  });
+
+  it('groupBy — multiple group fields', async () => {
+    // Insert records with two grouping dimensions
+    await aggCall({ type: 'insert', data: { name: 'A', score: 10, tier: 'vip' } });
+    await aggCall({ type: 'insert', data: { name: 'B', score: 20, tier: 'vip' } });
+    await aggCall({ type: 'insert', data: { name: 'A', score: 30, tier: 'basic' } });
+    await aggCall({ type: 'insert', data: { name: 'A', score: 40, tier: 'vip' } });
+
+    const result = await aggCall({
+      type: 'groupBy',
+      groupFields: ['name', 'tier'],
+      aggregate: { function: 'sum', field: 'score' },
+    }) as GroupByResult[];
+
+    expect(result).toHaveLength(3);
+    const aVip = result.find(r => r.key.name === 'A' && r.key.tier === 'vip')!;
+    const bVip = result.find(r => r.key.name === 'B' && r.key.tier === 'vip')!;
+    const aBasic = result.find(r => r.key.name === 'A' && r.key.tier === 'basic')!;
+    expect(aVip.value).toBe(50);   // 10 + 40
+    expect(bVip.value).toBe(20);
+    expect(aBasic.value).toBe(30);
   });
 });
 

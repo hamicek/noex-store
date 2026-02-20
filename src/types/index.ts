@@ -25,12 +25,14 @@ export type {
 } from './events.js';
 
 export type {
+  AggregateFunction,
   FilterOperators,
   FilterValue,
   WhereFilter,
   PaginateOptions,
   PaginatedResult,
   QueryDependencies,
+  GroupByResult,
   QueryBucket,
   QueryContext,
   QueryFn,

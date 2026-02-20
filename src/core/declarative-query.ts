@@ -1,4 +1,4 @@
-import type { QueryContext, WhereFilter } from '../types/query.js';
+import type { QueryContext, WhereFilter, GroupByResult } from '../types/query.js';
 import type { DeclarativeQueryConfig } from '../types/declarative-query.js';
 import type { StoreRecord } from '../types/record.js';
 
@@ -148,6 +148,41 @@ function computeAggregate(
   }
 }
 
+// ── Group By ─────────────────────────────────────────────────────
+
+export function computeGroupBy(
+  records: StoreRecord[],
+  groupFields: string[],
+  aggregate: { function: string; field?: string },
+): GroupByResult[] {
+  const groups = new Map<string, StoreRecord[]>();
+
+  for (const record of records) {
+    const keyParts = groupFields.map(f => String((record as Record<string, unknown>)[f] ?? 'null'));
+    const compositeKey = keyParts.join('\0');
+    let group = groups.get(compositeKey);
+    if (group === undefined) {
+      group = [];
+      groups.set(compositeKey, group);
+    }
+    group.push(record);
+  }
+
+  const results: GroupByResult[] = [];
+  for (const groupRecords of groups.values()) {
+    const keyObj: Record<string, unknown> = {};
+    for (const f of groupFields) {
+      keyObj[f] = (groupRecords[0] as Record<string, unknown>)[f];
+    }
+    results.push({
+      key: keyObj,
+      value: computeAggregate(groupRecords, aggregate as NonNullable<DeclarativeQueryConfig['aggregate']>) ?? 0,
+    });
+  }
+
+  return results;
+}
+
 // ── Main factory ─────────────────────────────────────────────────
 
 export type DeclarativeQueryFn = (ctx: QueryContext, params?: unknown) => Promise<unknown>;
@@ -170,6 +205,12 @@ export function createQueryFunction(config: DeclarativeQueryConfig): Declarative
 
     // 2. Aggregation short-circuit
     if (config.aggregate !== undefined) {
+      if (config.aggregate.groupBy !== undefined) {
+        const groupFields = typeof config.aggregate.groupBy === 'string'
+          ? [config.aggregate.groupBy]
+          : [...config.aggregate.groupBy];
+        return computeGroupBy(records, groupFields, config.aggregate);
+      }
       return computeAggregate(records, config.aggregate);
     }
 

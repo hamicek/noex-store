@@ -62,6 +62,15 @@ export interface QueryDependencies {
   readonly recordLevel: ReadonlyMap<string, ReadonlySet<unknown>>;
 }
 
+// ── Group By ─────────────────────────────────────────────────────
+
+export type AggregateFunction = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+export interface GroupByResult {
+  readonly key: Record<string, unknown>;
+  readonly value: number;
+}
+
 // ── Query Bucket ─────────────────────────────────────────────────
 
 /**
@@ -81,6 +90,11 @@ export interface QueryBucket {
   avg(field: string, filter?: WhereFilter): Promise<number>;
   min(field: string, filter?: WhereFilter): Promise<number | undefined>;
   max(field: string, filter?: WhereFilter): Promise<number | undefined>;
+  groupBy(
+    field: string | string[],
+    aggregate: { function: AggregateFunction; field?: string },
+    filter?: WhereFilter,
+  ): Promise<GroupByResult[]>;
 }
 
 /**

@@ -10,6 +10,7 @@ import type {
   BucketEvent,
   BucketInsertedEvent,
   BucketUpdatedEvent,
+  GroupByResult,
   PaginatedResult,
   StoreRecord,
   WhereFilter,
@@ -113,6 +114,7 @@ export type BucketCallMsg =
   | { readonly type: 'avg'; readonly field: string; readonly filter?: WhereFilter }
   | { readonly type: 'min'; readonly field: string; readonly filter?: WhereFilter }
   | { readonly type: 'max'; readonly field: string; readonly filter?: WhereFilter }
+  | { readonly type: 'groupBy'; readonly groupFields: readonly string[]; readonly aggregate: { readonly function: string; readonly field?: string }; readonly filter?: WhereFilter }
   | { readonly type: 'purgeExpired' }
   | { readonly type: 'commitBatch'; readonly operations: readonly CommitBatchOp[]; readonly autoincrementUpdate?: number }
   | { readonly type: 'rollbackBatch'; readonly undoOps: readonly UndoOp[] }
@@ -130,6 +132,7 @@ export type BucketCallReply =
   | number | undefined
   | BucketSnapshot
   | PaginatedResult
+  | GroupByResult[]
   | CommitBatchResult
   | BucketStats
   | undefined;
@@ -229,6 +232,8 @@ export function createBucketBehavior(
           return [handleMin(state, msg.field, msg.filter), state];
         case 'max':
           return [handleMax(state, msg.field, msg.filter), state];
+        case 'groupBy':
+          return [handleGroupBy(state, msg.groupFields, msg.aggregate, msg.filter), state];
         case 'insertMany':
           return handleInsertMany(bucketName, definition, eventBusRef, state, msg.data, ttlMs, maxSize);
         case 'updateMany':
@@ -803,6 +808,94 @@ function handleMax(
     }
   }
   return max;
+}
+
+function handleGroupBy(
+  state: BucketState,
+  groupFields: readonly string[],
+  aggregate: { readonly function: string; readonly field?: string },
+  filter?: WhereFilter,
+): GroupByResult[] {
+  const records = getMatchingRecords(state, filter);
+
+  const groups = new Map<string, StoreRecord[]>();
+  for (const record of records) {
+    const keyParts = groupFields.map(f => String((record as Record<string, unknown>)[f] ?? 'null'));
+    const compositeKey = keyParts.join('\0');
+    let group = groups.get(compositeKey);
+    if (group === undefined) {
+      group = [];
+      groups.set(compositeKey, group);
+    }
+    group.push(record);
+  }
+
+  const results: GroupByResult[] = [];
+  for (const groupRecords of groups.values()) {
+    const keyObj: Record<string, unknown> = {};
+    for (const f of groupFields) {
+      keyObj[f] = (groupRecords[0] as Record<string, unknown>)[f];
+    }
+    results.push({
+      key: keyObj,
+      value: computeGroupAggregate(groupRecords, aggregate),
+    });
+  }
+
+  return results;
+}
+
+function computeGroupAggregate(
+  records: StoreRecord[],
+  aggregate: { readonly function: string; readonly field?: string },
+): number {
+  switch (aggregate.function) {
+    case 'count':
+      return records.length;
+    case 'sum': {
+      let total = 0;
+      for (const r of records) {
+        const val = (r as Record<string, unknown>)[aggregate.field!];
+        if (typeof val === 'number') total += val;
+      }
+      return total;
+    }
+    case 'avg': {
+      if (records.length === 0) return 0;
+      let total = 0;
+      let count = 0;
+      for (const r of records) {
+        const val = (r as Record<string, unknown>)[aggregate.field!];
+        if (typeof val === 'number') {
+          total += val;
+          count++;
+        }
+      }
+      return count === 0 ? 0 : total / count;
+    }
+    case 'min': {
+      let min: number | undefined;
+      for (const r of records) {
+        const val = (r as Record<string, unknown>)[aggregate.field!];
+        if (typeof val === 'number' && (min === undefined || val < min)) {
+          min = val;
+        }
+      }
+      return min ?? 0;
+    }
+    case 'max': {
+      let max: number | undefined;
+      for (const r of records) {
+        const val = (r as Record<string, unknown>)[aggregate.field!];
+        if (typeof val === 'number' && (max === undefined || val > max)) {
+          max = val;
+        }
+      }
+      return max ?? 0;
+    }
+    default:
+      return 0;
+  }
 }
 
 // ── Transaction batch handlers ──────────────────────────────────

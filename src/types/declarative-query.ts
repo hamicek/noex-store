@@ -26,6 +26,8 @@ export interface DeclarativeQueryConfig {
     readonly function: 'count' | 'sum' | 'avg' | 'min' | 'max';
     /** Required for sum/avg/min/max. */
     readonly field?: string;
+    /** Group results by one or more fields. Returns GroupByResult[] when set. */
+    readonly groupBy?: string | readonly string[];
   };
 }
 

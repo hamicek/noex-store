@@ -1,5 +1,5 @@
 import { GenServer } from '@hamicek/noex';
-import type { PaginateOptions, PaginatedResult, StoreRecord, WhereFilter } from '../types/index.js';
+import type { AggregateFunction, GroupByResult, PaginateOptions, PaginatedResult, StoreRecord, WhereFilter } from '../types/index.js';
 import type { BucketRef } from './bucket-server.js';
 import type { RefManager } from './ref-manager.js';
 
@@ -195,5 +195,18 @@ export class BucketHandle {
       : { type: 'max' as const, field };
     const reply = await GenServer.call(this.#ref, msg);
     return reply as number | undefined;
+  }
+
+  async groupBy(
+    field: string | string[],
+    aggregate: { function: AggregateFunction; field?: string },
+    filter?: WhereFilter,
+  ): Promise<GroupByResult[]> {
+    const groupFields = typeof field === 'string' ? [field] : field;
+    const msg = filter !== undefined
+      ? { type: 'groupBy' as const, groupFields, aggregate, filter }
+      : { type: 'groupBy' as const, groupFields, aggregate };
+    const reply = await GenServer.call(this.#ref, msg);
+    return reply as GroupByResult[];
   }
 }

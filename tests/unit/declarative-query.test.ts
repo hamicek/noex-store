@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Store } from '../../src/core/store.js';
-import type { BucketDefinition, StoreRecord, DeclarativeQueryConfig } from '../../src/types/index.js';
+import type { BucketDefinition, GroupByResult, StoreRecord, DeclarativeQueryConfig } from '../../src/types/index.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -334,6 +334,107 @@ describe('declarative query: aggregation', () => {
 
     const result = await s.runQuery<number | undefined>('min-empty');
     expect(result).toBeUndefined();
+  });
+});
+
+// ── Aggregation with groupBy ────────────────────────────────────
+
+describe('declarative query: groupBy', () => {
+  it('count grouped by role', async () => {
+    const s = await createStore();
+    await seedUsers(s);
+
+    s.defineDeclarativeQuery('count-by-role', {
+      bucket: 'users',
+      aggregate: { function: 'count', groupBy: 'role' },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('count-by-role');
+    expect(result).toHaveLength(3); // admin, user, editor
+    const admin = result.find(r => r.key.role === 'admin')!;
+    const user = result.find(r => r.key.role === 'user')!;
+    const editor = result.find(r => r.key.role === 'editor')!;
+    expect(admin.value).toBe(2);
+    expect(user.value).toBe(2);
+    expect(editor.value).toBe(1);
+  });
+
+  it('sum grouped by role', async () => {
+    const s = await createStore();
+    await seedUsers(s);
+
+    s.defineDeclarativeQuery('sum-age-by-role', {
+      bucket: 'users',
+      aggregate: { function: 'sum', field: 'age', groupBy: 'role' },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('sum-age-by-role');
+    const admin = result.find(r => r.key.role === 'admin')!;
+    const user = result.find(r => r.key.role === 'user')!;
+    expect(admin.value).toBe(70);  // 30 + 40
+    expect(user.value).toBe(47);   // 25 + 22
+  });
+
+  it('avg grouped by role', async () => {
+    const s = await createStore();
+    await seedUsers(s);
+
+    s.defineDeclarativeQuery('avg-age-by-role', {
+      bucket: 'users',
+      aggregate: { function: 'avg', field: 'age', groupBy: 'role' },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('avg-age-by-role');
+    const admin = result.find(r => r.key.role === 'admin')!;
+    expect(admin.value).toBe(35); // (30 + 40) / 2
+  });
+
+  it('groupBy with filter', async () => {
+    const s = await createStore();
+    await seedUsers(s);
+
+    s.defineDeclarativeQuery('count-active-by-role', {
+      bucket: 'users',
+      filter: { active: true },
+      aggregate: { function: 'count', groupBy: 'role' },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('count-active-by-role');
+    // Active: Alice(admin), Bob(user), Diana(user), Eve(editor)
+    // Charlie is NOT active
+    const admin = result.find(r => r.key.role === 'admin')!;
+    const user = result.find(r => r.key.role === 'user')!;
+    expect(admin.value).toBe(1);
+    expect(user.value).toBe(2);
+  });
+
+  it('groupBy with multiple fields as array', async () => {
+    const s = await createStore();
+    await seedUsers(s);
+
+    s.defineDeclarativeQuery('count-by-role-active', {
+      bucket: 'users',
+      aggregate: { function: 'count', groupBy: ['role', 'active'] },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('count-by-role-active');
+    const adminActive = result.find(r => r.key.role === 'admin' && r.key.active === true)!;
+    const adminInactive = result.find(r => r.key.role === 'admin' && r.key.active === false)!;
+    expect(adminActive.value).toBe(1);  // Alice
+    expect(adminInactive.value).toBe(1); // Charlie
+  });
+
+  it('groupBy on empty result returns empty array', async () => {
+    const s = await createStore();
+
+    s.defineDeclarativeQuery('group-empty', {
+      bucket: 'users',
+      filter: { role: 'ghost' },
+      aggregate: { function: 'count', groupBy: 'role' },
+    });
+
+    const result = await s.runQuery<GroupByResult[]>('group-empty');
+    expect(result).toEqual([]);
   });
 });
 

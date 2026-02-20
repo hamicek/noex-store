@@ -1,4 +1,4 @@
-import type { QueryBucket, QueryContext, QueryDependencies, PaginateOptions, PaginatedResult, WhereFilter, ReadFilter } from '../types/query.js';
+import type { AggregateFunction, GroupByResult, QueryBucket, QueryContext, QueryDependencies, PaginateOptions, PaginatedResult, WhereFilter, ReadFilter } from '../types/query.js';
 import type { BucketHandle } from '../core/bucket-handle.js';
 import type { StoreRecord } from '../types/record.js';
 import { matchesFilter } from '../core/filter-matcher.js';
@@ -166,6 +166,18 @@ class QueryBucketHandle implements QueryBucket {
       return this.#handle.max(field, mergeWithFilter(this.#readFilter, filter));
     }
     return this.#handle.max(field, filter);
+  }
+
+  groupBy(
+    field: string | string[],
+    aggregate: { function: AggregateFunction; field?: string },
+    filter?: WhereFilter,
+  ): Promise<GroupByResult[]> {
+    this.#bucketDeps.add(this.#bucketName);
+    if (this.#readFilter !== null) {
+      return this.#handle.groupBy(field, aggregate, mergeWithFilter(this.#readFilter, filter));
+    }
+    return this.#handle.groupBy(field, aggregate, filter);
   }
 }
 
