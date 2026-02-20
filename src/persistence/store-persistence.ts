@@ -1,6 +1,6 @@
 import { EventBus, GenServer } from '@hamicek/noex';
 import type { EventBusRef, PersistedState, StorageAdapter } from '@hamicek/noex';
-import type { BucketEvent, StoreRecord, StorePersistenceConfig } from '../types/index.js';
+import type { BackupInfo, BucketEvent, StoreRecord, StorePersistenceConfig } from '../types/index.js';
 import type { BucketRef, BucketSnapshot, BucketInitialData } from '../core/bucket-server.js';
 
 // ── Internal types ──────────────────────────────────────────────
@@ -8,6 +8,16 @@ import type { BucketRef, BucketSnapshot, BucketInitialData } from '../core/bucke
 interface PersistedBucketState {
   readonly records: Array<[unknown, StoreRecord]>;
   readonly autoincrementCounter: number;
+}
+
+export interface BackupData {
+  readonly meta: {
+    readonly name: string;
+    readonly createdAt: number;
+    readonly bucketNames: readonly string[];
+    readonly totalRecords: number;
+  };
+  readonly buckets: Readonly<Record<string, PersistedBucketState>>;
 }
 
 // ── StorePersistence ────────────────────────────────────────────
@@ -91,6 +101,73 @@ export class StorePersistence {
     }
   }
 
+  // ── Backup / Restore ──────────────────────────────────────
+
+  async createBackup(name: string): Promise<BackupInfo> {
+    const buckets: Record<string, PersistedBucketState> = {};
+    let totalRecords = 0;
+
+    for (const [bucketName, ref] of this.#refs) {
+      const snapshot = await GenServer.call(ref, { type: 'getSnapshot' }) as BucketSnapshot;
+      buckets[bucketName] = {
+        records: snapshot.records as Array<[unknown, StoreRecord]>,
+        autoincrementCounter: snapshot.autoincrementCounter,
+      };
+      totalRecords += snapshot.records.length;
+    }
+
+    const createdAt = Date.now();
+    const backupData: BackupData = {
+      meta: { name, createdAt, bucketNames: Object.keys(buckets), totalRecords },
+      buckets,
+    };
+
+    const key = this.#backupKey(name);
+    await this.#adapter.save(key, {
+      state: backupData,
+      metadata: {
+        persistedAt: createdAt,
+        serverId: this.#storeName,
+        schemaVersion: 1,
+      },
+    });
+
+    return { id: name, name, createdAt, bucketNames: Object.keys(buckets), totalRecords };
+  }
+
+  async listBackups(): Promise<BackupInfo[]> {
+    const prefix = `${this.#storeName}:backup:`;
+    const keys = await this.#adapter.listKeys(prefix);
+
+    const backups: BackupInfo[] = [];
+    for (const key of keys) {
+      const persisted = await this.#adapter.load<BackupData>(key);
+      if (persisted) {
+        const { meta } = persisted.state;
+        backups.push({
+          id: meta.name,
+          name: meta.name,
+          createdAt: meta.createdAt,
+          bucketNames: meta.bucketNames,
+          totalRecords: meta.totalRecords,
+        });
+      }
+    }
+
+    return backups.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  async loadBackup(name: string): Promise<BackupData | undefined> {
+    const key = this.#backupKey(name);
+    const persisted = await this.#adapter.load<BackupData>(key);
+    return persisted?.state;
+  }
+
+  async deleteBackup(name: string): Promise<boolean> {
+    const key = this.#backupKey(name);
+    return this.#adapter.delete(key);
+  }
+
   // ── Private ─────────────────────────────────────────────────
 
   #onBucketChange(bucketName: string): void {
@@ -143,5 +220,9 @@ export class StorePersistence {
 
   #bucketKey(name: string): string {
     return `${this.#storeName}:bucket:${name}`;
+  }
+
+  #backupKey(name: string): string {
+    return `${this.#storeName}:backup:${name}`;
   }
 }

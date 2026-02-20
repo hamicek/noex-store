@@ -1,6 +1,6 @@
 import type { EventBusRef, SupervisorRef } from '@hamicek/noex';
 import { EventBus, GenServer, Supervisor } from '@hamicek/noex';
-import type { BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, StoreRecord, DeclarativeQueryConfig, QueryInfo, ReadFilter } from '../types/index.js';
+import type { BackupInfo, BucketDefinition, BucketSchemaUpdate, BucketEvent, FieldDefinition, QueryContext, QueryFn, StorePersistenceConfig, StoreRecord, DeclarativeQueryConfig, QueryInfo, ReadFilter } from '../types/index.js';
 import { BucketHandle } from './bucket-handle.js';
 import { createBucketBehavior, type BucketInitialData, type BucketRef, type BucketSnapshot, type BucketStats } from './bucket-server.js';
 import { RefManager } from './ref-manager.js';
@@ -87,6 +87,23 @@ export class TransactionConflictError extends Error {
     this.bucket = bucket;
     this.key = key;
     this.field = field;
+  }
+}
+
+export class PersistenceRequiredError extends Error {
+  constructor(operation: string) {
+    super(`Cannot ${operation}: persistence is not configured`);
+    this.name = 'PersistenceRequiredError';
+  }
+}
+
+export class BackupNotFoundError extends Error {
+  readonly backup: string;
+
+  constructor(backup: string) {
+    super(`Backup "${backup}" not found`);
+    this.name = 'BackupNotFoundError';
+    this.backup = backup;
   }
 }
 
@@ -453,6 +470,62 @@ export class Store {
     readFilter?: ReadFilter,
   ): Promise<TResult> {
     return this.#queryManager.runQuery(queryName, params, readFilter) as Promise<TResult>;
+  }
+
+  // ── Backup / Restore ──────────────────────────────────────────
+
+  async createBackup(name?: string): Promise<BackupInfo> {
+    if (!this.#persistence) {
+      throw new PersistenceRequiredError('create backup');
+    }
+
+    await this.#persistence.flush();
+
+    const backupName = name ?? `backup-${Date.now()}`;
+    return this.#persistence.createBackup(backupName);
+  }
+
+  async listBackups(): Promise<BackupInfo[]> {
+    if (!this.#persistence) {
+      throw new PersistenceRequiredError('list backups');
+    }
+
+    return this.#persistence.listBackups();
+  }
+
+  async restoreBackup(nameOrId: string): Promise<void> {
+    if (!this.#persistence) {
+      throw new PersistenceRequiredError('restore backup');
+    }
+
+    const backupData = await this.#persistence.loadBackup(nameOrId);
+    if (!backupData) {
+      throw new BackupNotFoundError(nameOrId);
+    }
+
+    for (const [bucketName, bucketState] of Object.entries(backupData.buckets)) {
+      if (!this.#definitions.has(bucketName)) continue;
+
+      const definition = this.#definitions.get(bucketName)!;
+
+      this.#refManager.unregisterBucket(bucketName);
+
+      await this.#rebuildBucketCore(bucketName, definition, {
+        records: bucketState.records,
+        autoincrementCounter: bucketState.autoincrementCounter,
+      });
+
+      this.#refManager.registerBucket(bucketName, definition);
+      await this.#refManager.indexExistingRecords(bucketName);
+    }
+  }
+
+  async deleteBackup(nameOrId: string): Promise<boolean> {
+    if (!this.#persistence) {
+      throw new PersistenceRequiredError('delete backup');
+    }
+
+    return this.#persistence.deleteBackup(nameOrId);
   }
 
   async settle(): Promise<void> {

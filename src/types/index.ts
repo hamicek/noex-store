@@ -51,3 +51,7 @@ export type {
   MigrationBucketHandle,
   MigrationResult,
 } from './migration.js';
+
+export type {
+  BackupInfo,
+} from './backup.js';

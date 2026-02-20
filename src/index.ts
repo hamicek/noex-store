@@ -32,6 +32,7 @@ export type {
   QueryInfo,
   ReadFilter,
   StorePersistenceConfig,
+  BackupInfo,
 } from './types/index.js';
 
 // Utils
@@ -67,11 +68,12 @@ export { BucketHandle } from './core/bucket-handle.js';
 
 // Core — Store
 export type { StoreOptions, StoreStats } from './core/store.js';
-export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError, TransactionConflictError } from './core/store.js';
+export { Store, BucketAlreadyExistsError, BucketNotDefinedError, UniqueConstraintError, TransactionConflictError, PersistenceRequiredError, BackupNotFoundError } from './core/store.js';
 export { QueryAlreadyDefinedError, QueryNotDefinedError } from './core/query-errors.js';
 
 // Persistence
 export { StorePersistence } from './persistence/store-persistence.js';
+export type { BackupData } from './persistence/store-persistence.js';
 
 // Lifecycle
 export { TtlManager } from './lifecycle/ttl-manager.js';
